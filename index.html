@@ -1,0 +1,3476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Emberwild — Booster Pack Simulator</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0812; }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.3/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback, useContext } = React;
+
+
+/* ============================== DATA ============================== */
+
+const TYPES = [
+  { id: "ember", name: "Ember", icon: "🔥", color: "#ef4444" },
+  { id: "tide", name: "Tide", icon: "🌊", color: "#3b82f6" },
+  { id: "bloom", name: "Bloom", icon: "🌿", color: "#22c55e" },
+  { id: "volt", name: "Volt", icon: "⚡", color: "#eab308" },
+  { id: "mind", name: "Mind", icon: "🔮", color: "#ec4899" },
+  { id: "brawl", name: "Brawl", icon: "🥊", color: "#b45309" },
+  { id: "shadow", name: "Shadow", icon: "🌑", color: "#8b5cf6" },
+  { id: "alloy", name: "Alloy", icon: "⚙️", color: "#64748b" },
+  { id: "wyrm", name: "Wyrm", icon: "🐉", color: "#4f46e5" },
+  { id: "neutral", name: "Neutral", icon: "⚪", color: "#a8a29e" },
+  { id: "bright", name: "Bright", icon: "✨", color: "#f472b6" },
+];
+const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.id, t]));
+
+const HANDLERS = [
+  "Ranger Kessa", "Professor Odali", "Scout Bren", "Warden Iyla",
+  "Tinker Molvane", "Curator Yess", "Pathfinder Omu", "Archivist Sella",
+];
+const HANDLER_TIERS = ["artist", "artist", "artist", "signature", "signature", "artist", "signature", "artist"];
+
+const TIER_DEFS = [
+  { id: "common", label: "Common", pips: 1, symbol: "♦", group: "base" },
+  { id: "uncommon", label: "Uncommon", pips: 2, symbol: "♦", group: "base" },
+  { id: "rare", label: "Rare", pips: 3, symbol: "♦", group: "base" },
+  { id: "doubleRare", label: "Double Rare", pips: 4, symbol: "♦", group: "base" },
+  { id: "artist", label: "Artist Rare", pips: 1, symbol: "★", group: "star" },
+  { id: "signature", label: "Signature Rare", pips: 2, symbol: "★", group: "star" },
+  { id: "scene", label: "Scene Rare", pips: 3, symbol: "★", group: "star" },
+  { id: "prism", label: "Prism Rare", pips: 1, symbol: "✦", group: "prism" },
+  { id: "prismSignature", label: "Prism Signature", pips: 2, symbol: "✦", group: "prism" },
+  { id: "gilded", label: "Gilded Rare", pips: 1, symbol: "♛", group: "gilded" },
+  { id: "champion", label: "Champion", pips: 1, symbol: "⚔", group: "champion" },
+  { id: "siblings", label: "Sibling", pips: 1, symbol: "☯", group: "siblings" },
+  { id: "echo", label: "Echo", pips: 1, symbol: "❂", group: "echo" },
+];
+const TIER_MAP = Object.fromEntries(TIER_DEFS.map((t) => [t.id, t]));
+const TIER_ORDER = TIER_DEFS.map((t) => t.id);
+const HIT_THRESHOLD = TIER_ORDER.indexOf("rare");
+
+function shade(hex, pct) {
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) + pct, g = ((num >> 8) & 0x00ff) + pct, b = (num & 0x0000ff) + pct;
+  r = Math.max(Math.min(255, r), 0); g = Math.max(Math.min(255, g), 0); b = Math.max(Math.min(255, b), 0);
+  return "#" + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+}
+function colorForCard(card) {
+  if (card.tier === "echo") return card.echoType ? TYPE_MAP[card.echoType].color : "#f5f3ff";
+  return card.category === "handler" ? "#a78bfa" : TYPE_MAP[card.type].color;
+}
+const EchoTypeContext = React.createContext(null);
+const SHINY_COLORS = {
+  ember: "#29e6d6", tide: "#f472b6", bloom: "#ec4899", volt: "#a78bfa", mind: "#4ade80",
+  brawl: "#3b82f6", shadow: "#facc15", alloy: "#2dd4bf", wyrm: "#f97316", neutral: "#fbbf24", bright: "#22d3ee",
+};
+function isRareOrBetter(card) {
+  return TIER_ORDER.indexOf(card.tier) >= HIT_THRESHOLD;
+}
+/* Each type is strong against two others; weaknesses are the inverse of that. */
+const TYPE_STRONG_AGAINST = {
+  ember: ["bloom", "alloy"],
+  tide: ["ember", "brawl"],
+  bloom: ["tide", "neutral"],
+  volt: ["tide", "bright"],
+  mind: ["brawl", "volt"],
+  brawl: ["alloy", "neutral"],
+  shadow: ["mind", "bright"],
+  alloy: ["bright", "wyrm"],
+  wyrm: ["volt", "mind"],
+  neutral: ["shadow", "ember"],
+  bright: ["shadow", "wyrm"],
+};
+const TYPE_WEAK_AGAINST = (() => {
+  const weak = {};
+  TYPES.forEach((t) => (weak[t.id] = []));
+  Object.entries(TYPE_STRONG_AGAINST).forEach(([atk, defs]) => {
+    defs.forEach((d) => { if (weak[d]) weak[d].push(atk); });
+  });
+  return weak;
+})();
+function typeMultiplier(atkType, defType) {
+  if (!atkType || !defType) return 1;
+  if (atkType === "handler" || defType === "handler" || atkType === "echo" || defType === "echo") return 1;
+  if (atkType === defType) return 1;
+  if ((TYPE_STRONG_AGAINST[atkType] || []).includes(defType)) return 1.5;
+  if ((TYPE_STRONG_AGAINST[defType] || []).includes(atkType)) return 0.67;
+  return 1;
+}
+/* ---------- Levels, stat scaling & EXP ---------- */
+const MAX_LEVEL = 100;
+const ARENA_GROWTH = 1.75; // every win multiplies the next opponent's level by 1.75
+const GOD_TIERS = ["echo", "siblings"]; // Echo, Neon & Drogen never level
+const LevelsContext = React.createContext({});
+
+function canLevel(card) {
+  return !!card && card.category === "creature" && !GOD_TIERS.includes(card.tier);
+}
+
+// "Strength" is measured on the same scale as a card's printed HP. Every levelable tier tops out
+// at a fixed share of the weakest god (Neon/Drogen). The rarest levelable tier (Gilded) reaches
+// 8/10 of that god at Lv.100 — and never more — so the gods always stay on top.
+const TIER_MAX_FRAC = {
+  common: 0.11, uncommon: 0.16, rare: 0.22, doubleRare: 0.30,
+  artist: 0.38, signature: 0.45, scene: 0.52, prism: 0.60,
+  champion: 0.68, prismSignature: 0.74, gilded: 0.80,
+};
+const LEVEL1_FRAC = 0.35; // a Lv.1 card fights at 35% of its printed HP
+
+function godRefStrength() { return Math.min(NEON_CARD.hp, DROGEN_CARD.hp); }
+
+function maxStrength(card) {
+  let cap = godRefStrength() * (TIER_MAX_FRAC[card.tier] || 0.1);
+  if (card.isEvolution) cap *= 1.3; // evolved forms have more headroom than their tier
+  return Math.max(cap, card.hp * LEVEL1_FRAC * 1.15);
+}
+function strengthAt(card, level = 1) {
+  if (!canLevel(card)) return card.hp; // gods don't level
+  const start = card.hp * LEVEL1_FRAC;
+  const L = Math.max(1, Math.min(MAX_LEVEL, Math.floor(level) || 1));
+  const t = (L - 1) / (MAX_LEVEL - 1);
+  return start + (maxStrength(card) - start) * t;
+}
+function battleMaxHp(card, level = 1) { return Math.max(1, Math.round(strengthAt(card, level) * 3)); }
+function battleAtk(card, level = 1) { return Math.max(3, Math.round(strengthAt(card, level) * 0.45)); }
+
+// Steep curve: Lv.1→2 is 30 EXP, Lv.50→51 is ~165,000, Lv.99→100 is ~700,000.
+function expToNext(level) { return Math.round(30 * Math.pow(level, 2.2)); }
+function totalExpToMax() {
+  let sum = 0;
+  for (let l = 1; l < MAX_LEVEL; l++) sum += expToNext(l);
+  return sum;
+}
+
+// Every card pays out a different amount of EXP when defeated: rarer cards pay more,
+// each card has its own personal multiplier, and it scales with the level of the card you beat.
+const TIER_EXP_BASE = {
+  common: 20, uncommon: 35, rare: 60, doubleRare: 100, artist: 160, signature: 240,
+  scene: 340, prism: 480, champion: 650, prismSignature: 800, gilded: 1000,
+};
+function expYield(card, enemyLevel = 1) {
+  const base = TIER_EXP_BASE[card.tier] || 20;
+  const personal = 0.6 + seededRng(`xp-${card.id}`)() * 0.8; // ×0.6 – ×1.4, fixed per card
+  const evo = card.isEvolution ? 1.4 : 1;
+  return Math.max(1, Math.round(base * personal * evo * (1 + 0.12 * (enemyLevel - 1))));
+}
+const CHAMPION_CAPTURE_CHANCE = 0.1;
+const AUTO_OPEN_MS = 3000; // auto-open takes 3 seconds per pack
+function hpColor(ratio) { return ratio > 0.5 ? "#22c55e" : ratio > 0.2 ? "#eab308" : "#ef4444"; }
+function pickAiTeam(playerCards, pool) {
+  const avgIdx = Math.round(playerCards.reduce((s, c) => s + TIER_ORDER.indexOf(c.tier), 0) / playerCards.length);
+  let candidates = pool.filter(
+    (c) => c.category === "creature" && c.tier !== "champion" && c.tier !== "echo" && c.tier !== "siblings" && Math.abs(TIER_ORDER.indexOf(c.tier) - avgIdx) <= 1
+  );
+  if (candidates.length < 3) candidates = pool.filter((c) => c.category === "creature" && c.tier !== "champion" && c.tier !== "echo" && c.tier !== "siblings");
+  const picks = [];
+  const used = new Set();
+  while (picks.length < 3 && picks.length < candidates.length) {
+    const idx = Math.floor(Math.random() * candidates.length);
+    if (used.has(idx)) continue;
+    used.add(idx);
+    picks.push(candidates[idx]);
+  }
+  return picks;
+}
+
+/* ============================== SEEDED RNG + NAME GEN ============================== */
+
+function hashSeed(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return h >>> 0;
+  };
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seededRng(str) {
+  return mulberry32(hashSeed(str)());
+}
+
+const SYL_OPEN = ["b","c","d","f","g","h","j","k","l","m","n","p","r","s","t","v","w","z","ch","dr","fl","gr","kr","sh","th","vr","zh","cl","br","pl"];
+const SYL_VOWEL = ["a","e","i","o","u","ae","io","ai","ou","yn","ol","ee"];
+const SYL_CLOSE = ["", "", "", "n","r","x","s","l","k","m","g","th"];
+function genName(rng) {
+  const syllables = 2 + (rng() < 0.35 ? 1 : 0);
+  let name = "";
+  for (let i = 0; i < syllables; i++) {
+    name += SYL_OPEN[Math.floor(rng() * SYL_OPEN.length)];
+    name += SYL_VOWEL[Math.floor(rng() * SYL_VOWEL.length)];
+    if (i === syllables - 1) name += SYL_CLOSE[Math.floor(rng() * SYL_CLOSE.length)];
+  }
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/* ============================== CARD POOL (1,085 CREATURES) ============================== */
+
+const TIER_COUNTS = {
+  common: 380, uncommon: 271, rare: 163, doubleRare: 109,
+  artist: 65, signature: 43, scene: 27, prism: 16, prismSignature: 8, gilded: 3, champion: 12,
+};
+const TIER_HP_BASE = {
+  common: 40, uncommon: 65, rare: 90, doubleRare: 130,
+  artist: 110, signature: 140, scene: 150, prism: 120, prismSignature: 195, gilded: 230, champion: 170,
+};
+
+/* ---------- Card values (rarer = more valuable) ---------- */
+const TIER_VALUES = {
+  common: 10, uncommon: 25, rare: 60, doubleRare: 150,
+  artist: 300, signature: 600, scene: 1000, prism: 1800,
+  champion: 3000, prismSignature: 3500, gilded: 6000,
+};
+// Echo's cost: one of every Gilded + 5 Champion + 5 Prism Signature
+const ECHO_COST = { gildedEach: 1, champion: 5, prismSignature: 5 };
+// What the cards you hand over for Echo are worth in total (shown in the trade panel).
+const ECHO_COST_VALUE =
+  TIER_COUNTS.gilded * TIER_VALUES.gilded +
+  ECHO_COST.champion * TIER_VALUES.champion +
+  ECHO_COST.prismSignature * TIER_VALUES.prismSignature;
+// Echo's own value — the highest of any card in the game (Neon, Drogen and Genesis Champions are ◈1,000,000).
+const ECHO_VALUE = 10000000;
+
+function cardValue(card) {
+  if (!card) return 0;
+  if (card.tier === "echo") return ECHO_VALUE;
+  if (card.tier === "siblings") return SIBLING_VALUE;
+  if (card.deck === "genesis" && card.tier === "champion") return GENESIS_CHAMPION_VALUE;
+  let v = TIER_VALUES[card.tier] || 10;
+  if (card.isEvolution) v = Math.round(v * 1.5);
+  return v;
+}
+function fmtValue(n) { return Number(n || 0).toLocaleString(); }
+
+/* ---------- Moves ---------- */
+const MOVE_ROOTS = {
+  ember: ["Cinder", "Flare", "Scorch", "Ember", "Pyre"],
+  tide: ["Ripple", "Torrent", "Surge", "Brine", "Undertow"],
+  bloom: ["Thorn", "Bloom", "Bramble", "Verdant", "Spore"],
+  volt: ["Spark", "Arc", "Volt", "Static", "Thunder"],
+  mind: ["Psi", "Mirage", "Reverie", "Trance", "Insight"],
+  brawl: ["Knuckle", "Grapple", "Hammer", "Brawl", "Impact"],
+  shadow: ["Dusk", "Umbra", "Wraith", "Nightfall", "Shade"],
+  alloy: ["Rivet", "Gear", "Chrome", "Forge", "Ironclad"],
+  wyrm: ["Wyrm", "Scale", "Dracon", "Tempest", "Skyrend"],
+  neutral: ["Drift", "Plain", "Wander", "Simple", "Steady"],
+  bright: ["Glimmer", "Radiance", "Lumen", "Prism", "Dawn"],
+  echo: ["Echo", "Resonance", "Everlight", "Origin", "Chorus"],
+  handler: ["Command", "Rally", "Signal", "Order", "Focus"],
+};
+const MOVE_SUFFIXES = ["Strike", "Burst", "Fang", "Wave", "Crash", "Lash", "Barrage", "Howl", "Slam", "Veil"];
+
+function genMoves(card) {
+  const rng = seededRng(`mv-${card.id}-${card.name}`);
+  const tierIdx = Math.max(0, TIER_ORDER.indexOf(card.tier));
+  const ownType = card.type && MOVE_ROOTS[card.type] ? card.type : "neutral";
+  const pickName = (typeId) => {
+    const roots = MOVE_ROOTS[typeId] || MOVE_ROOTS.neutral;
+    return `${roots[Math.floor(rng() * roots.length)]} ${MOVE_SUFFIXES[Math.floor(rng() * MOVE_SUFFIXES.length)]}`;
+  };
+  // Move 1: reliable, always the card's own type
+  const m1 = { id: `${card.id}:m1`, name: pickName(ownType), type: ownType, power: 55 + Math.floor(rng() * 20) + tierIdx * 2 };
+  // Move 2: heavier hit, sometimes off-type for coverage against the card's own weaknesses
+  const coverage = TYPE_WEAK_AGAINST[ownType] || [];
+  const useCoverage = rng() < 0.45 && coverage.length > 0;
+  const m2Type = useCoverage ? coverage[Math.floor(rng() * coverage.length)] : ownType;
+  const m2 = { id: `${card.id}:m2`, name: pickName(m2Type), type: m2Type, power: 90 + Math.floor(rng() * 25) + tierIdx * 3 };
+  return [m1, m2];
+}
+
+function buildCardPool() {
+  const cards = [];
+  const usedNames = new Set();
+  let typeCursor = 0;
+  let uid = 0;
+  const commonCards = [];
+  TIER_ORDER.forEach((tier) => {
+    const count = TIER_COUNTS[tier];
+    for (let i = 0; i < count; i++) {
+      const type = TYPES[typeCursor % TYPES.length].id;
+      typeCursor++;
+      const rng = seededRng(`${tier}-${type}-${i}-ew`);
+      let name = genName(rng);
+      let guard = 0;
+      while (usedNames.has(name) && guard++ < 20) name = genName(rng);
+      usedNames.add(name);
+      const hp = TIER_HP_BASE[tier] + Math.floor(rng() * 30);
+      const card = { id: `c${uid++}`, name, type, tier, hp, category: "creature" };
+      cards.push(card);
+      if (tier === "common") commonCards.push(card);
+    }
+  });
+
+  // Evolutions: every 6th Common creature has a stronger Evolved form, pulled as a Rare
+  const EVOLUTION_STEP = 6;
+  for (let i = 0; i < commonCards.length; i += EVOLUTION_STEP) {
+    const base = commonCards[i];
+    const evoRng = seededRng(`evo-${base.id}-ew`);
+    const evoHp = Math.round(base.hp * 1.9 + TIER_HP_BASE.rare * 0.35 + evoRng() * 20);
+    const evoCard = {
+      id: `e${uid++}`, name: `${base.name}, Evolved`, type: base.type, tier: "rare",
+      hp: evoHp, category: "creature", isEvolution: true,
+      evolvesFromId: base.id, evolvesFromName: base.name,
+    };
+    base.hasEvolution = true;
+    base.evolvesToId = evoCard.id;
+    cards.push(evoCard);
+  }
+
+  HANDLERS.forEach((h, i) => {
+    cards.push({ id: `h${uid++}`, name: h, type: "handler", tier: HANDLER_TIERS[i], category: "handler" });
+  });
+  cards.push(ECHO_CARD);
+  return cards;
+}
+const ECHO_CARD = {
+  id: "echo-001", name: "Echo", type: "echo", tier: "echo", hp: 999,
+  category: "creature", isSecret: true,
+};
+
+/* ============================== GENESIS DECK (2,240 new cards) ============================== */
+// Every tier count is roughly double the original deck's, totaling exactly 2,240.
+const GENESIS_TIER_COUNTS = {
+  common: 804, uncommon: 542, rare: 326, doubleRare: 218,
+  artist: 130, signature: 86, scene: 54, prism: 32, prismSignature: 16, gilded: 6, champion: 24,
+};
+const GENESIS_TIER_ORDER = TIER_ORDER.filter((t) => t !== "echo" && t !== "siblings");
+
+function buildGenesisPool() {
+  const cards = [];
+  const usedNames = new Set();
+  let typeCursor = 0;
+  let uid = 0;
+  GENESIS_TIER_ORDER.forEach((tier) => {
+    const count = GENESIS_TIER_COUNTS[tier];
+    for (let i = 0; i < count; i++) {
+      const type = TYPES[typeCursor % TYPES.length].id;
+      typeCursor++;
+      const rng = seededRng(`gen-${tier}-${type}-${i}-nd`);
+      let name = genName(rng);
+      let guard = 0;
+      while (usedNames.has(name) && guard++ < 20) name = genName(rng);
+      usedNames.add(name);
+      const hp = TIER_HP_BASE[tier] + Math.floor(rng() * 30);
+      cards.push({ id: `g${uid++}`, name, type, tier, hp, category: "creature", deck: "genesis" });
+    }
+  });
+  cards.push(NEON_CARD, DROGEN_CARD);
+  return cards;
+}
+// Brother and sister — the Genesis deck's rarest pull, in place of Echo.
+const NEON_CARD = {
+  id: "neon-001", name: "Neon", type: "volt", tier: "siblings", hp: 320,
+  category: "creature", isSecret: true, deck: "genesis", siblingId: "drogen-001",
+};
+const DROGEN_CARD = {
+  id: "drogen-001", name: "Drogen", type: "wyrm", tier: "siblings", hp: 320,
+  category: "creature", isSecret: true, deck: "genesis", siblingId: "neon-001",
+};
+const SIBLING_VALUE = 1000000;
+const SIBLING_BATTLE_BOOST = 1.5; // both get 50% stronger when fielded together
+const GENESIS_CHAMPION_VALUE = 1000000;
+
+/* ============================== ODDS ============================== */
+
+const BASE_SLOT = [["common", 88], ["uncommon", 12]];
+const MID_SLOT = [["uncommon", 70], ["rare", 20], ["doubleRare", 8], ["artist", 2]];
+const HIT_SLOT = [
+  ["rare", 58], ["doubleRare", 20], ["artist", 10], ["signature", 5],
+  ["scene", 2], ["prism", 1.5], ["prismSignature", 0.4], ["gilded", 0.1],
+];
+const GOD_SLOT = [
+  ["artist", 45], ["signature", 25], ["scene", 12], ["prism", 10], ["prismSignature", 5], ["gilded", 3],
+];
+const GOD_PACK_CHANCE = 0.005;
+const ECHO_CHANCE = 0.00005; // 0.005% per pack — half of what each sibling gets (0.01%), so Echo is the rarest card
+
+/* ---------- Premium "Prismatic" pack ---------- */
+const PREMIUM_PACK_COST = 10000;
+const LOW_TIERS = ["common", "uncommon", "rare"];
+// Doubles the odds of every tier except Common/Uncommon/Rare, which are halved
+function scaleWeights(weights) {
+  return weights.map(([t, w]) => [t, LOW_TIERS.includes(t) ? w * 0.5 : w * 2]);
+}
+
+/* ---------- Luck Boost (shop item) ---------- */
+const LUCK_MULT = 5;
+const LUCK_OPTIONS = [
+  { id: "5m", label: "5 Minutes", ms: 5 * 60 * 1000, cost: 3000 },
+  { id: "15m", label: "15 Minutes", ms: 15 * 60 * 1000, cost: 7000 },
+  { id: "35m", label: "35 Minutes", ms: 35 * 60 * 1000, cost: 15000 },
+  { id: "1h", label: "1 Hour", ms: 60 * 60 * 1000, cost: 25000 },
+];
+// 5x's the odds of every tier above Common/Uncommon/Rare
+function applyLuck(weights) {
+  return weights.map(([t, w]) => [t, LOW_TIERS.includes(t) ? w : w * LUCK_MULT]);
+}
+
+function weightedTier(weights) {
+  const total = weights.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total, acc = 0;
+  for (const [tier, w] of weights) { acc += w; if (r <= acc) return tier; }
+  return weights[weights.length - 1][0];
+}
+function cardsByTier(pool) {
+  const map = {};
+  TIER_ORDER.forEach((t) => (map[t] = pool.filter((c) => c.tier === t)));
+  return map;
+}
+function pickCard(byTier, tier) {
+  const arr = byTier[tier];
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+function rollPack(pool, premium = false, luckActive = false) {
+  const byTier = cardsByTier(pool);
+  let base = premium ? scaleWeights(BASE_SLOT) : BASE_SLOT;
+  let mid = premium ? scaleWeights(MID_SLOT) : MID_SLOT;
+  let hit = premium ? scaleWeights(HIT_SLOT) : HIT_SLOT;
+  let god = premium ? scaleWeights(GOD_SLOT) : GOD_SLOT;
+  if (luckActive) { base = applyLuck(base); mid = applyLuck(mid); hit = applyLuck(hit); god = applyLuck(god); }
+  let godChance = premium ? GOD_PACK_CHANCE * 2 : GOD_PACK_CHANCE;
+  let echoChance = ECHO_CHANCE; // Prismatic packs do not improve Echo's odds
+  if (luckActive) { godChance *= LUCK_MULT; echoChance *= LUCK_MULT; }
+  const isGodPack = Math.random() < godChance;
+  const cards = [];
+  if (isGodPack) {
+    for (let i = 0; i < 8; i++) cards.push(pickCard(byTier, weightedTier(god)));
+  } else {
+    for (let i = 0; i < 4; i++) cards.push(pickCard(byTier, weightedTier(base)));
+    for (let i = 0; i < 2; i++) cards.push(pickCard(byTier, weightedTier(mid)));
+    for (let i = 0; i < 2; i++) cards.push(pickCard(byTier, weightedTier(hit)));
+  }
+  const isEcho = Math.random() < echoChance;
+  if (isEcho) cards[cards.length - 1] = ECHO_CARD;
+  return { cards, isGodPack, isEcho, premium };
+}
+
+const SIBLING_CHANCE = 0.0002; // 0.02%
+function rollGenesisPack(genesisPool, luckActive = false) {
+  const byTier = cardsByTier(genesisPool);
+  let base = BASE_SLOT, mid = MID_SLOT, hit = HIT_SLOT, god = GOD_SLOT;
+  if (luckActive) { base = applyLuck(base); mid = applyLuck(mid); hit = applyLuck(hit); god = applyLuck(god); }
+  let godChance = GOD_PACK_CHANCE;
+  let sibChance = SIBLING_CHANCE;
+  if (luckActive) { godChance *= LUCK_MULT; sibChance *= LUCK_MULT; }
+  const isGodPack = Math.random() < godChance;
+  const cards = [];
+  if (isGodPack) {
+    for (let i = 0; i < 8; i++) cards.push(pickCard(byTier, weightedTier(god)));
+  } else {
+    for (let i = 0; i < 4; i++) cards.push(pickCard(byTier, weightedTier(base)));
+    for (let i = 0; i < 2; i++) cards.push(pickCard(byTier, weightedTier(mid)));
+    for (let i = 0; i < 2; i++) cards.push(pickCard(byTier, weightedTier(hit)));
+  }
+  const isSibling = Math.random() < sibChance;
+  if (isSibling) cards[cards.length - 1] = Math.random() < 0.5 ? NEON_CARD : DROGEN_CARD;
+  return { cards, isGodPack, isSibling, deck: "genesis" };
+}
+
+/* ---------- Purchasable moves (shop) ---------- */
+// minTier gates which cards are strong enough to learn a move.
+// type must match the card's own type (Echo can learn anything).
+// Every card has a maximum number of equipped attacks; rarer cards have more slots.
+const MOVE_SLOTS = {
+  common: 2, uncommon: 2, rare: 2,
+  doubleRare: 3, artist: 3, signature: 3, scene: 3, prism: 3,
+  champion: 4, prismSignature: 4, gilded: 4, echo: 4, siblings: 4,
+};
+function moveSlotsFor(card) { return MOVE_SLOTS[card.tier] || 2; }
+// A card's library = its 2 innate moves + every move bought for it.
+function libraryOf(card, purchased) { return [...genMoves(card), ...(purchased || [])]; }
+function equippedOf(card, purchased, loadoutIds) {
+  const lib = libraryOf(card, purchased);
+  const slots = moveSlotsFor(card);
+  const chosen = (loadoutIds || []).map((id) => lib.find((m) => m.id === id)).filter(Boolean).slice(0, slots);
+  if (chosen.length) return chosen;
+  return [...lib].sort((a, b) => b.power - a.power).slice(0, slots); // default: strongest moves
+}
+const SHOP_MOVES = [
+  { id: "sm-ember", name: "Solar Detonation", type: "ember", power: 135, cost: 3200, minTier: "rare" },
+  { id: "sm-tide", name: "Abyssal Maelstrom", type: "tide", power: 135, cost: 3200, minTier: "rare" },
+  { id: "sm-bloom", name: "Worldroot Bind", type: "bloom", power: 135, cost: 3200, minTier: "rare" },
+  { id: "sm-volt", name: "Overload Cascade", type: "volt", power: 135, cost: 3200, minTier: "rare" },
+  { id: "sm-mind", name: "Mind Fracture", type: "mind", power: 140, cost: 3800, minTier: "doubleRare" },
+  { id: "sm-brawl", name: "Titan Uppercut", type: "brawl", power: 140, cost: 3800, minTier: "doubleRare" },
+  { id: "sm-shadow", name: "Eclipse Rend", type: "shadow", power: 140, cost: 3800, minTier: "doubleRare" },
+  { id: "sm-alloy", name: "Tempered Onslaught", type: "alloy", power: 140, cost: 3800, minTier: "doubleRare" },
+  { id: "sm-wyrm", name: "Cataclysm Breath", type: "wyrm", power: 165, cost: 7500, minTier: "artist" },
+  { id: "sm-bright", name: "Aurora Judgement", type: "bright", power: 165, cost: 7500, minTier: "artist" },
+  { id: "sm-neutral", name: "Boundless Rush", type: "neutral", power: 125, cost: 2600, minTier: "uncommon" },
+  { id: "sm-echo", name: "Origin Chorus", type: "echo", power: 200, cost: 25000, minTier: "gilded" },
+];
+
+function canLearnMove(card, move, learnedList) {
+  if (!card || card.category === "handler") return { ok: false, why: "Handlers can't learn moves" };
+  const list = learnedList || [];
+  if (list.some((m) => m.id === move.id)) return { ok: false, why: "Already learned" };
+  const isEcho = card.tier === "echo";
+  if (!isEcho && move.type === "echo") return { ok: false, why: "Only Echo can learn this" };
+  if (!isEcho && move.type !== card.type) return { ok: false, why: `Needs a ${TYPE_MAP[move.type].name} card` };
+  if (TIER_ORDER.indexOf(card.tier) < TIER_ORDER.indexOf(move.minTier)) {
+    return { ok: false, why: `Needs ${TIER_MAP[move.minTier].label} or higher` };
+  }
+  return { ok: true, why: "" };
+}
+
+/* ============================== STORAGE ============================== */
+
+const STORAGE_KEY = "emberwild-progress";
+async function loadProgress() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* no saved progress yet, or storage unavailable */ }
+  return { collection: {}, packsOpened: 0, battleWins: 0, echoType: null, coins: 0, cardMoves: {}, luckExpiresAt: 0, cardLevels: {}, arenaLevel: 1, cardLoadout: {} };
+}
+async function saveProgress(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+  catch (e) { /* best effort — storage may be full or unavailable */ }
+}
+
+/* ============================== TRADER ============================== */
+
+const TRADER_KEY = "emberwild-trader";
+const TRADER_VISIT_MS = 8 * 60 * 1000;   // trader stays 8 minutes
+const TRADER_GAP_MS = 4 * 60 * 1000;     // then comes back 4 minutes after leaving
+const TRADER_STOCK = 20;
+const TRADER_ECHO_CHANCE = 0.0025; // 0.25% per visit — half of each sibling's 0.5%
+const TRADER_REFRESH_COST = 2000;
+const TRADER_MIXED_MULT = 2;      // paying with cards AND coins: the price is 2x
+const TRADER_COIN_ONLY_MULT = 4;  // paying with coins alone: the price is 4x
+// Echo, Neon and Drogen can only be traded for cards — never bought with coins.
+function evaluateTrade(card, cardsValue, coinsOffered) {
+  const v = cardValue(card);
+  if (GOD_TIERS.includes(card.tier) || coinsOffered <= 0) {
+    return { mode: "cards", required: v, paid: cardsValue, ok: cardsValue >= v };
+  }
+  if (cardsValue <= 0) {
+    return { mode: "coins", required: v * TRADER_COIN_ONLY_MULT, paid: coinsOffered, ok: coinsOffered >= v * TRADER_COIN_ONLY_MULT };
+  }
+  return { mode: "mixed", required: v * TRADER_MIXED_MULT, paid: cardsValue + coinsOffered, ok: cardsValue + coinsOffered >= v * TRADER_MIXED_MULT };
+}
+
+// Rarer tiers are much less likely to appear in the trader's stock
+const TRADER_WEIGHTS = [
+  ["common", 40], ["uncommon", 24], ["rare", 14], ["doubleRare", 8],
+  ["artist", 5], ["signature", 3], ["scene", 2], ["prism", 1.5],
+  ["champion", 0.6], ["prismSignature", 0.8], ["gilded", 0.4],
+];
+
+function loadTrader() {
+  try {
+    const raw = localStorage.getItem(TRADER_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* none stored yet */ }
+  return null;
+}
+function saveTrader(d) {
+  try { localStorage.setItem(TRADER_KEY, JSON.stringify(d)); }
+  catch (e) { /* best effort */ }
+}
+
+const TRADER_SIBLING_CHANCE = 0.01;
+function rollTraderStock(pool) {
+  const byTier = cardsByTier(pool);
+  const hasEcho = Math.random() < TRADER_ECHO_CHANCE;
+  const hasSibling = Math.random() < TRADER_SIBLING_CHANCE;
+  const siblingCard = hasSibling ? (Math.random() < 0.5 ? NEON_CARD : DROGEN_CARD) : null;
+  const ids = [];
+  const target = TRADER_STOCK - (hasEcho ? 1 : 0) - (hasSibling ? 1 : 0);
+  let guard = 0;
+  while (ids.length < target && guard++ < 500) {
+    const tier = weightedTier(TRADER_WEIGHTS);
+    const arr = byTier[tier];
+    if (!arr || !arr.length) continue;
+    const pick = arr[Math.floor(Math.random() * arr.length)];
+    if (!ids.includes(pick.id)) ids.push(pick.id);
+  }
+  if (hasEcho) ids.push(ECHO_CARD.id);
+  if (hasSibling) ids.push(siblingCard.id);
+  return { cardIds: ids, hasEcho, hasSibling };
+}
+
+/* ============================== PROCEDURAL CREATURE ART ============================== */
+
+function blobPath(rng, cx, cy, r, points, variance) {
+  const step = (Math.PI * 2) / points;
+  const pts = [];
+  for (let i = 0; i < points; i++) {
+    const a = i * step;
+    const rad = r * (1 - variance / 2 + rng() * variance);
+    pts.push([cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]);
+  }
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)} `;
+  for (let i = 0; i < points; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % points];
+    const mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
+    d += `Q ${p0[0].toFixed(1)} ${p0[1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)} `;
+  }
+  return d + "Z";
+}
+function blobPathEllipse(rng, cx, cy, rx, ry, points, variance) {
+  const step = (Math.PI * 2) / points;
+  const pts = [];
+  for (let i = 0; i < points; i++) {
+    const a = i * step;
+    const rad = 1 - variance / 2 + rng() * variance;
+    pts.push([cx + Math.cos(a) * rx * rad, cy + Math.sin(a) * ry * rad]);
+  }
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)} `;
+  for (let i = 0; i < points; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % points];
+    const mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
+    d += `Q ${p0[0].toFixed(1)} ${p0[1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)} `;
+  }
+  return d + "Z";
+}
+function starPath(cx, cy, r) {
+  let d = "";
+  for (let i = 0; i < 5; i++) {
+    const a1 = (Math.PI / 5) * (2 * i) - Math.PI / 2;
+    const a2 = (Math.PI / 5) * (2 * i + 1) - Math.PI / 2;
+    const x1 = cx + Math.cos(a1) * r, y1 = cy + Math.sin(a1) * r;
+    const x2 = cx + Math.cos(a2) * r * 0.45, y2 = cy + Math.sin(a2) * r * 0.45;
+    d += (i === 0 ? "M" : "L") + `${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)} `;
+  }
+  return d + "Z";
+}
+
+function TypeAccessory({ typeId, cx, cy, r, dark }) {
+  const top = cy - r;
+  switch (typeId) {
+    case "ember":
+      return <path d={`M ${cx-8} ${top+10} Q ${cx-10} ${top-6} ${cx-2} ${top+2} Q ${cx-2} ${top-8} ${cx+4} ${top-2} Q ${cx+2} ${top+8} ${cx-8} ${top+10} Z`} fill="#ffd23f" opacity="0.9" />;
+    case "tide":
+      return <path d={`M ${cx-r+4} ${cy} Q ${cx-r-8} ${cy-10} ${cx-r+2} ${cy-18} Q ${cx-r+10} ${cy-8} ${cx-r+4} ${cy} Z`} fill={dark} />;
+    case "bloom":
+      return <ellipse cx={cx} cy={top+2} rx="6" ry="12" fill="#bff7c9" transform={`rotate(-20 ${cx} ${top+2})`} />;
+    case "volt":
+      return <polygon points={`${cx-6},${top+14} ${cx+2},${top-4} ${cx-2},${top+6} ${cx+8},${top-10}`} fill="#fff6b0" />;
+    case "mind":
+      return <circle cx={cx} cy={top+10} r="5" fill="none" stroke="#ffd9f0" strokeWidth="2" />;
+    case "brawl":
+      return (<><circle cx={cx-r+2} cy={cy+4} r="4" fill={dark} /><circle cx={cx+r-2} cy={cy+4} r="4" fill={dark} /></>);
+    case "shadow":
+      return <path d={`M ${cx-10} ${cy+r-4} Q ${cx-14} ${cy+r+6} ${cx-6} ${cy+r+2} Q ${cx-4} ${cy+r+10} ${cx+2} ${cy+r+2}`} fill="none" stroke={dark} strokeWidth="3" strokeLinecap="round" opacity="0.8" />;
+    case "alloy":
+      return (<><line x1={cx-r+4} y1={cy} x2={cx+r-4} y2={cy} stroke={dark} strokeWidth="2" /><circle cx={cx-6} cy={cy} r="1.6" fill="#e2e8f0" /><circle cx={cx+6} cy={cy} r="1.6" fill="#e2e8f0" /></>);
+    case "wyrm":
+      return (<><path d={`M ${cx-r+2} ${cy-4} Q ${cx-r-14} ${cy-14} ${cx-r-2} ${cy+8} Q ${cx-r+6} ${cy+2} ${cx-r+2} ${cy-4} Z`} fill={dark} opacity="0.85" /><path d={`M ${cx+r-2} ${cy-4} Q ${cx+r+14} ${cy-14} ${cx+r+2} ${cy+8} Q ${cx+r-6} ${cy+2} ${cx+r-2} ${cy-4} Z`} fill={dark} opacity="0.85" /></>);
+    case "neutral":
+      return (<><circle cx={cx-r+4} cy={top+8} r="5" fill={dark} opacity="0.5" /><circle cx={cx+r-4} cy={top+8} r="5" fill={dark} opacity="0.5" /></>);
+    case "bright":
+      return (<><path d={starPath(cx-r+2, top-2, 4)} fill="#fff1fb" /><path d={starPath(cx+r-2, top+8, 3)} fill="#fff1fb" /></>);
+    default:
+      return null;
+  }
+}
+
+function CreatureArt({ card }) {
+  const isHandler = card.category === "handler";
+  const seedStr = isHandler ? `h-${card.name}` : `${card.id}-${card.name}-${card.type}`;
+  const rng = useMemo(() => seededRng(seedStr), [seedStr]);
+  const isShiny = !isHandler && (card.tier === "prism" || card.tier === "prismSignature");
+  const color = isShiny ? (SHINY_COLORS[card.type] || colorForCard(card)) : colorForCard(card);
+  const light = shade(color, 50);
+  const dark = shade(color, -55);
+  const gradId = `grad-${card.id}`;
+  const clipId = `clip-${card.id}`;
+
+  if (isHandler) {
+    const cloakColors = ["#a78bfa", "#818cf8", "#c084fc", "#93c5fd"];
+    const cloak = cloakColors[Math.floor(rng() * cloakColors.length)];
+    const cloakLight = shade(cloak, 35);
+    const cloakDark = shade(cloak, -45);
+    const emblemColors = ["#ffd23f", "#29e6d6", "#ff3ea5", "#f2c9a0"];
+    const emblem = emblemColors[Math.floor(rng() * emblemColors.length)];
+    return (
+      <svg viewBox="0 0 100 100" className="creature-svg">
+        <defs>
+          <radialGradient id={gradId} cx="38%" cy="20%" r="85%">
+            <stop offset="0%" stopColor={cloakLight} />
+            <stop offset="55%" stopColor={cloak} />
+            <stop offset="100%" stopColor={cloakDark} />
+          </radialGradient>
+        </defs>
+        <ellipse cx="50" cy="94" rx="22" ry="4" fill="#000" opacity="0.28" />
+        <path d="M 30 92 Q 26 55 50 50 Q 74 55 70 92 Z" fill={`url(#${gradId})`} stroke={cloakDark} strokeWidth="2" />
+        <path d="M 50 50 Q 61 62 59 92 L 63 92 Q 65 58 50 50 Z" fill={cloakDark} opacity="0.4" />
+        <path d="M 32 78 Q 50 84 68 78 L 68 82 Q 50 88 32 82 Z" fill={cloakDark} opacity="0.55" />
+        <circle cx="50" cy="80" r="4.5" fill={emblem} stroke={cloakDark} strokeWidth="1" />
+        <path d="M 26 68 Q 20 78 24 88" fill="none" stroke={cloakDark} strokeWidth="5" strokeLinecap="round" opacity="0.85" />
+        <path d="M 74 68 Q 80 78 76 88" fill="none" stroke={cloakDark} strokeWidth="5" strokeLinecap="round" opacity="0.85" />
+        <circle cx="50" cy="34" r="16" fill="#f2c9a0" stroke={cloakDark} strokeWidth="2" />
+        <ellipse cx="43" cy="33" rx="1.6" ry="2" fill="#241f2e" />
+        <ellipse cx="57" cy="33" rx="1.6" ry="2" fill="#241f2e" />
+        <path d="M 43 38 Q 50 43 57 38" fill="none" stroke={cloakDark} strokeWidth="1.5" opacity="0.6" strokeLinecap="round" />
+        <path d="M 34 30 Q 50 12 66 30 Q 66 20 50 18 Q 34 20 34 30 Z" fill={cloakDark} />
+        <path d="M 34 28 Q 50 22 66 28" fill="none" stroke={shade(cloak, -20)} strokeWidth="2" opacity="0.5" />
+      </svg>
+    );
+  }
+
+  const cx = 50, cy = 54;
+
+  if (card.tier === "echo") {
+    const r = 27;
+    const bodyPath = blobPath(rng, cx, cy, r, 11, 0.2);
+    return (
+      <svg viewBox="0 0 100 100" className="creature-svg">
+        <defs>
+          <radialGradient id={gradId} cx="34%" cy="26%" r="80%">
+            <stop offset="0%" stopColor="#ffffff" />
+            <stop offset="55%" stopColor={light} />
+            <stop offset="100%" stopColor={dark} />
+          </radialGradient>
+        </defs>
+        {[0, 1, 2].map((i) => (
+          <ellipse key={i} cx={cx} cy={cy} rx={r * (1.25 + i * 0.32)} ry={r * (1.25 + i * 0.32)} fill="none" stroke="#fff" strokeWidth="0.6" opacity={0.28 - i * 0.08} />
+        ))}
+        <ellipse cx={cx} cy={cy + r * 0.95} rx={r * 0.8} ry={r * 0.16} fill="#000" opacity="0.25" />
+        <path d={bodyPath} transform="translate(-11,-9)" opacity="0.16" fill="#c7d2fe" />
+        <path d={bodyPath} transform="translate(-5.5,-4.5)" opacity="0.32" fill="#e0e7ff" />
+        <path d={bodyPath} fill={`url(#${gradId})`} stroke={dark} strokeWidth="2.5" />
+        <ellipse cx={cx - r * 0.4} cy={cy - r * 0.45} rx={r * 0.32} ry={r * 0.22} fill="#fff" opacity="0.3" />
+        <circle cx={cx - 8} cy={cy - 2} r="4.2" fill="#fff" opacity="0.35" />
+        <circle cx={cx + 8} cy={cy - 2} r="4.2" fill="#fff" opacity="0.35" />
+        <circle cx={cx - 8} cy={cy - 2} r="2.2" fill="#fff" />
+        <circle cx={cx + 8} cy={cy - 2} r="2.2" fill="#fff" />
+      </svg>
+    );
+  }
+
+  if (card.type === "wyrm") {
+    const tierIdx = TIER_ORDER.indexOf(card.tier);
+    const hornPairs = Math.min(4, (1 + Math.floor(tierIdx / 3)) + (card.isEvolution ? 1 : 0));
+    const spineCount = Math.min(7, 2 + Math.floor(tierIdx / 2));
+    const wingScale = 1 + tierIdx * 0.06;
+    const showChestGem = tierIdx >= 4;
+    const showAura = tierIdx >= 7;
+    const showCrest = tierIdx >= 9;
+    const doubleWings = tierIdx >= 10;
+    const trimColor = tierIdx >= 9 ? "#f0b429" : dark;
+
+    let r = 24 + rng() * 5;
+    if (card.isEvolution) r *= 1.18;
+    const bodyRx = r * 0.58, bodyRy = r * 1.1;
+    const bodyCy = cy + r * 0.12;
+    const body = blobPathEllipse(rng, cx, bodyCy, bodyRx, bodyRy, 10, 0.16);
+    const hornCurl = rng() < 0.5 ? 1 : -1;
+    const tailSide = rng() < 0.5 ? -1 : 1;
+    const eyeGap = 6 + rng() * 3;
+    const eyeY = cy - r * 0.55;
+    const eyeR = 3.2 + rng() * 1.2;
+    const patternRoll = rng();
+    const patternType = patternRoll < 0.55 ? "spots" : patternRoll < 0.85 ? "stripes" : "none";
+    const rWing = r * wingScale;
+
+    const tailPath = `M ${cx + tailSide * bodyRx * 0.5} ${bodyCy + bodyRy * 0.7} Q ${cx + tailSide * r * 1.9} ${bodyCy + bodyRy * 0.9} ${cx + tailSide * r * 2.3} ${bodyCy + bodyRy * 0.3} Q ${cx + tailSide * r * 1.6} ${bodyCy + bodyRy * 0.55} ${cx + tailSide * bodyRx * 0.35} ${bodyCy + bodyRy * 0.55} Z`;
+    const wingPath = (side, scale) => `M ${cx + side * bodyRx * 0.7} ${bodyCy - bodyRy * 0.3}
+      Q ${cx + side * r * 2.1 * scale} ${bodyCy - bodyRy * 0.9} ${cx + side * r * 2.4 * scale} ${bodyCy - bodyRy * 0.1}
+      Q ${cx + side * r * 1.9 * scale} ${bodyCy - bodyRy * 0.05} ${cx + side * r * 1.7 * scale} ${bodyCy + bodyRy * 0.35}
+      Q ${cx + side * r * 1.3 * scale} ${bodyCy - bodyRy * 0.05} ${cx + side * bodyRx * 0.6} ${bodyCy + bodyRy * 0.1} Z`;
+    const hornPath = (side, i) => {
+      const spread = i * 0.13, lenScale = 1 - i * 0.16;
+      return `M ${cx + side * r * (0.28 + spread)} ${cy - r * 1.15} Q ${cx + side * hornCurl * r * (0.15 + spread * 0.5)} ${cy - r * (1.55 + i * 0.15)} ${cx + side * r * (0.05 + spread * 0.35)} ${cy - r * (1.7 + i * 0.22) * lenScale}`;
+    };
+
+    const spots = [...Array(6)].map(() => ({
+      x: cx + (rng() - 0.5) * bodyRx * 1.6, y: bodyCy + (rng() - 0.5) * bodyRy * 1.6,
+    }));
+    const stripes = [...Array(5)].map((_, i) => {
+      const yOff = bodyCy - bodyRy * 0.8 + i * (bodyRy * 0.4);
+      return { x1: cx - bodyRx, y1: yOff, x2: cx + bodyRx, y2: yOff + bodyRy * 0.15 };
+    });
+
+    return (
+      <svg viewBox="0 0 100 100" className="creature-svg">
+        <defs>
+          <radialGradient id={gradId} cx="34%" cy="24%" r="80%">
+            <stop offset="0%" stopColor={light} />
+            <stop offset="55%" stopColor={color} />
+            <stop offset="100%" stopColor={dark} />
+          </radialGradient>
+          <clipPath id={clipId}><path d={body} /></clipPath>
+        </defs>
+
+        <ellipse cx={cx} cy={bodyCy + bodyRy * 0.98} rx={bodyRx * 0.9} ry={r * 0.14} fill="#000" opacity="0.3" />
+
+        {showAura && (
+          <>
+            <ellipse cx={cx} cy={cy - r * 0.1} rx={r * 1.9} ry={r * 2.1} fill="none" stroke={light} strokeWidth="0.6" opacity="0.35" />
+            <ellipse cx={cx} cy={cy - r * 0.1} rx={r * 1.6} ry={r * 1.8} fill="none" stroke={light} strokeWidth="0.5" opacity="0.25" />
+          </>
+        )}
+
+        <path d={tailPath} fill={dark} opacity="0.92" stroke={trimColor} strokeWidth={tierIdx >= 9 ? 1 : 0} />
+        {doubleWings && (
+          <>
+            <path d={wingPath(-1, 0.7)} fill={shade(dark, 15)} opacity="0.5" />
+            <path d={wingPath(1, 0.7)} fill={shade(dark, 15)} opacity="0.5" />
+          </>
+        )}
+        <path d={wingPath(-1, 1)} fill={dark} opacity="0.88" stroke={trimColor} strokeWidth={tierIdx >= 9 ? 1.4 : 1} />
+        <path d={wingPath(1, 1)} fill={dark} opacity="0.88" stroke={trimColor} strokeWidth={tierIdx >= 9 ? 1.4 : 1} />
+        {tierIdx >= 4 && (
+          <>
+            <line x1={cx - bodyRx * 0.65} y1={bodyCy - bodyRy * 0.2} x2={cx - rWing * 1.8} y2={bodyCy - bodyRy * 0.35} stroke={light} strokeWidth="0.7" opacity="0.4" />
+            <line x1={cx + bodyRx * 0.65} y1={bodyCy - bodyRy * 0.2} x2={cx + rWing * 1.8} y2={bodyCy - bodyRy * 0.35} stroke={light} strokeWidth="0.7" opacity="0.4" />
+          </>
+        )}
+        <ellipse cx={cx - bodyRx * 0.55} cy={bodyCy + bodyRy * 0.75} rx={r * 0.15} ry={r * 0.22} fill={dark} />
+        <ellipse cx={cx + bodyRx * 0.55} cy={bodyCy + bodyRy * 0.75} rx={r * 0.15} ry={r * 0.22} fill={dark} />
+        <polygon points={`${cx - bodyRx * 0.6},${bodyCy + bodyRy * 0.95} ${cx - bodyRx * 0.5},${bodyCy + bodyRy * 0.8} ${cx - bodyRx * 0.4},${bodyCy + bodyRy * 0.95}`} fill={dark} />
+        <polygon points={`${cx + bodyRx * 0.4},${bodyCy + bodyRy * 0.95} ${cx + bodyRx * 0.5},${bodyCy + bodyRy * 0.8} ${cx + bodyRx * 0.6},${bodyCy + bodyRy * 0.95}`} fill={dark} />
+
+        <path d={body} fill={`url(#${gradId})`} stroke={dark} strokeWidth="2.5" />
+
+        {patternType === "spots" && (
+          <g clipPath={`url(#${clipId})`} opacity="0.3">
+            {spots.map((s, i) => <ellipse key={i} cx={s.x} cy={s.y} rx={r * 0.06} ry={r * 0.05} fill={i % 2 === 0 ? dark : light} />)}
+          </g>
+        )}
+        {patternType === "stripes" && (
+          <g clipPath={`url(#${clipId})`} opacity="0.22">
+            {stripes.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={dark} strokeWidth={r * 0.1} strokeLinecap="round" />)}
+          </g>
+        )}
+
+        {[...Array(spineCount)].map((_, i) => {
+          const yPos = bodyCy - bodyRy * 0.85 + i * ((bodyRy * 1.15) / Math.max(1, spineCount - 1));
+          const spikeH = 5 + tierIdx * 0.35;
+          return <polygon key={i} points={`${cx - 3},${yPos} ${cx},${yPos - spikeH} ${cx + 3},${yPos}`} fill={tierIdx >= 9 ? trimColor : light} opacity="0.75" />;
+        })}
+        <ellipse cx={cx} cy={bodyCy - bodyRy * 0.15} rx={bodyRx * 0.4} ry={bodyRy * 0.35} fill={light} opacity="0.35" />
+        {showChestGem && (
+          <>
+            <circle cx={cx} cy={bodyCy - bodyRy * 0.05} r={r * 0.17} fill={light} opacity="0.25" />
+            <circle cx={cx} cy={bodyCy - bodyRy * 0.05} r={r * 0.1} fill={tierIdx >= 9 ? "#fff3c4" : light} stroke={dark} strokeWidth="1" />
+          </>
+        )}
+
+        <ellipse cx={cx} cy={cy - r * 0.85} rx={r * 0.42} ry={r * 0.38} fill={`url(#${gradId})`} stroke={dark} strokeWidth="2" />
+        <ellipse cx={cx} cy={cy - r * 0.55} rx={r * 0.22} ry={r * 0.16} fill={`url(#${gradId})`} stroke={dark} strokeWidth="1.6" />
+
+        {showCrest && (
+          <polygon points={`${cx - 5},${cy - r * 1.25} ${cx},${cy - r * 1.85} ${cx + 5},${cy - r * 1.25}`} fill={trimColor} opacity="0.85" />
+        )}
+        {[...Array(hornPairs)].map((_, i) => (
+          <React.Fragment key={i}>
+            <path d={hornPath(-1, i)} fill="none" stroke={i === 0 ? dark : trimColor} strokeWidth={2.4 - i * 0.3} strokeLinecap="round" />
+            <path d={hornPath(1, i)} fill="none" stroke={i === 0 ? dark : trimColor} strokeWidth={2.4 - i * 0.3} strokeLinecap="round" />
+          </React.Fragment>
+        ))}
+        <path d={`M ${cx - r * 0.5} ${cy - r * 1.1} A ${r * 0.5} ${r * 0.5} 0 0 1 ${cx - r * 0.05} ${cy - r * 1.5}`} fill="none" stroke="#fff" strokeWidth="1.6" opacity="0.4" strokeLinecap="round" />
+
+        <ellipse cx={cx - eyeGap} cy={eyeY} rx={eyeR} ry={eyeR * 1.1} fill="#241f2e" />
+        <ellipse cx={cx + eyeGap} cy={eyeY} rx={eyeR} ry={eyeR * 1.1} fill="#241f2e" />
+        <circle cx={cx - eyeGap - eyeR * 0.3} cy={eyeY - eyeR * 0.3} r={eyeR * 0.3} fill="#fff" />
+        <circle cx={cx + eyeGap - eyeR * 0.3} cy={eyeY - eyeR * 0.3} r={eyeR * 0.3} fill="#fff" />
+        <circle cx={cx - 3} cy={cy - r * 0.5} r="1" fill={dark} opacity="0.7" />
+        <circle cx={cx + 3} cy={cy - r * 0.5} r="1" fill={dark} opacity="0.7" />
+      </svg>
+    );
+  }
+
+  let r = 24 + rng() * 6;
+  if (card.isEvolution) r *= 1.18;
+  const points = 10 + Math.floor(rng() * 3);
+  const body = blobPath(rng, cx, cy, r, points, 0.24);
+  const eyeGap = 7 + rng() * 4;
+  const eyeY = cy - 4 + rng() * 4;
+  const eyeR = 3.6 + rng() * 1.6;
+  const bellyRy = r * (0.32 + rng() * 0.14);
+  const tailSide = rng() < 0.5 ? -1 : 1;
+  const browMood = rng();
+  const mouthType = rng();
+  const patternRoll = rng();
+  const patternType = patternRoll < 0.32 ? "spots" : patternRoll < 0.58 ? "stripes" : "none";
+
+  const tailBaseX = cx + tailSide * r * 0.5, tailBaseY = cy + r * 0.4;
+  const tailTipX = cx + tailSide * r * 1.6, tailTipY = cy - r * 0.05;
+  const tailPath = `M ${tailBaseX} ${tailBaseY} Q ${cx + tailSide * r * 1.35} ${cy + r * 0.2} ${tailTipX} ${tailTipY} Q ${cx + tailSide * r * 1.1} ${cy + r * 0.35} ${tailBaseX + tailSide * r * 0.1} ${tailBaseY + r * 0.12} Z`;
+
+  const spots = [];
+  for (let i = 0; i < 5; i++) {
+    spots.push({
+      x: cx + (rng() - 0.5) * r * 1.3, y: cy + (rng() - 0.5) * r * 1.1,
+      rx: r * (0.07 + rng() * 0.06), ry: r * (0.06 + rng() * 0.05),
+    });
+  }
+  const stripes = [];
+  for (let i = 0; i < 4; i++) {
+    const yOff = cy - r * 0.7 + i * (r * 0.45);
+    stripes.push({ x1: cx - r * 0.95, y1: yOff, x2: cx + r * 0.95, y2: yOff + r * 0.3 });
+  }
+
+  const browY = eyeY - eyeR * 1.9;
+  const browArc = browMood < 0.34 ? -1 : browMood < 0.67 ? 0 : 1; // raised / flat / angled
+
+  return (
+    <svg viewBox="0 0 100 100" className="creature-svg">
+      <defs>
+        <radialGradient id={gradId} cx="34%" cy="28%" r="80%">
+          <stop offset="0%" stopColor={light} />
+          <stop offset="55%" stopColor={color} />
+          <stop offset="100%" stopColor={dark} />
+        </radialGradient>
+        <clipPath id={clipId}><path d={body} /></clipPath>
+      </defs>
+
+      <ellipse cx={cx} cy={cy + r * 0.95} rx={r * 0.82} ry={r * 0.16} fill="#000" opacity="0.3" />
+      {card.isEvolution && (
+        <>
+          <ellipse cx={cx} cy={cy - r * 0.05} rx={r * 1.55} ry={r * 1.55} fill="none" stroke={light} strokeWidth="0.7" opacity="0.35" />
+          <ellipse cx={cx} cy={cy - r * 0.05} rx={r * 1.3} ry={r * 1.3} fill="none" stroke={light} strokeWidth="0.5" opacity="0.28" />
+        </>
+      )}
+      <path d={tailPath} fill={dark} opacity="0.92" />
+      <circle cx={tailTipX} cy={tailTipY} r={r * 0.11} fill={light} opacity="0.8" />
+      <ellipse cx={cx - r * 0.4} cy={cy + r * 0.72} rx={r * 0.22} ry={r * 0.15} fill={dark} />
+      <ellipse cx={cx + r * 0.4} cy={cy + r * 0.72} rx={r * 0.22} ry={r * 0.15} fill={dark} />
+
+      <path d={body} fill={`url(#${gradId})`} stroke={dark} strokeWidth="2.5" />
+
+      {patternType === "spots" && (
+        <g clipPath={`url(#${clipId})`} opacity="0.32">
+          {spots.map((s, i) => <ellipse key={i} cx={s.x} cy={s.y} rx={s.rx} ry={s.ry} fill={i % 2 === 0 ? dark : light} />)}
+        </g>
+      )}
+      {patternType === "stripes" && (
+        <g clipPath={`url(#${clipId})`} opacity="0.24">
+          {stripes.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={dark} strokeWidth={r * 0.13} strokeLinecap="round" />)}
+        </g>
+      )}
+
+      <ellipse cx={cx} cy={cy + r * 0.32} rx={r * 0.48} ry={bellyRy} fill={light} opacity="0.4" />
+
+      <ellipse cx={cx - r * 0.95} cy={cy - r * 0.02} rx={r * 0.19} ry={r * 0.34} fill={`url(#${gradId})`} stroke={dark} strokeWidth="1.4" transform={`rotate(-18 ${cx - r * 0.95} ${cy - r * 0.02})`} />
+      <ellipse cx={cx + r * 0.95} cy={cy - r * 0.02} rx={r * 0.19} ry={r * 0.34} fill={`url(#${gradId})`} stroke={dark} strokeWidth="1.4" transform={`rotate(18 ${cx + r * 0.95} ${cy - r * 0.02})`} />
+      <circle cx={cx - r * 1.08} cy={cy + r * 0.28} r={r * 0.13} fill={dark} opacity="0.9" />
+      <circle cx={cx + r * 1.08} cy={cy + r * 0.28} r={r * 0.13} fill={dark} opacity="0.9" />
+
+      <TypeAccessory typeId={card.type} cx={cx} cy={cy} r={r} dark={dark} />
+
+      <path
+        d={`M ${cx - r * 0.72} ${cy - r * 0.3} A ${r} ${r} 0 0 1 ${cx - r * 0.08} ${cy - r * 0.98}`}
+        fill="none" stroke="#fff" strokeWidth="2" opacity="0.4" strokeLinecap="round"
+      />
+      <ellipse cx={cx - r * 0.4} cy={cy - r * 0.45} rx={r * 0.32} ry={r * 0.22} fill="#fff" opacity="0.16" />
+
+      <ellipse cx={cx - eyeGap - eyeR * 0.1} cy={eyeY + eyeR * 1.5} rx={eyeR * 0.85} ry={eyeR * 0.5} fill="#ff8fa3" opacity="0.3" />
+      <ellipse cx={cx + eyeGap - eyeR * 0.1} cy={eyeY + eyeR * 1.5} rx={eyeR * 0.85} ry={eyeR * 0.5} fill="#ff8fa3" opacity="0.3" />
+
+      <path d={`M ${cx - eyeGap - eyeR} ${browY + browArc * 1.5} Q ${cx - eyeGap} ${browY - browArc * 1.5} ${cx - eyeGap + eyeR} ${browY + browArc * 0.5}`} fill="none" stroke={dark} strokeWidth="1.7" strokeLinecap="round" />
+      <path d={`M ${cx + eyeGap - eyeR} ${browY + browArc * 0.5} Q ${cx + eyeGap} ${browY - browArc * 1.5} ${cx + eyeGap + eyeR} ${browY + browArc * 1.5}`} fill="none" stroke={dark} strokeWidth="1.7" strokeLinecap="round" />
+
+      <ellipse cx={cx - eyeGap} cy={eyeY} rx={eyeR} ry={eyeR * 1.15} fill="#241f2e" />
+      <ellipse cx={cx + eyeGap} cy={eyeY} rx={eyeR} ry={eyeR * 1.15} fill="#241f2e" />
+      <circle cx={cx - eyeGap - eyeR * 0.3} cy={eyeY - eyeR * 0.35} r={eyeR * 0.32} fill="#fff" />
+      <circle cx={cx + eyeGap - eyeR * 0.3} cy={eyeY - eyeR * 0.35} r={eyeR * 0.32} fill="#fff" />
+
+      {mouthType < 0.55 ? (
+        <path d={`M ${cx - 4} ${eyeY + eyeR * 2.1} Q ${cx} ${eyeY + eyeR * 2.1 + 3.5} ${cx + 4} ${eyeY + eyeR * 2.1}`} fill="none" stroke={dark} strokeWidth="1.6" strokeLinecap="round" />
+      ) : (
+        <ellipse cx={cx} cy={eyeY + eyeR * 2.3} rx="2.1" ry="2.6" fill={dark} opacity="0.85" />
+      )}
+    </svg>
+  );
+}
+
+/* ============================== CARD VISUAL ============================== */
+
+function pips(tier) {
+  const def = TIER_MAP[tier];
+  return def.symbol.repeat(def.pips);
+}
+
+const SPARKLE_POS = [
+  { top: "8%", left: "14%", delay: 0, color: "#fff" },
+  { top: "18%", left: "82%", delay: 0.4, color: "#ffd23f" },
+  { top: "42%", left: "4%", delay: 0.9, color: "#29e6d6" },
+  { top: "64%", left: "88%", delay: 0.3, color: "#fff" },
+  { top: "82%", left: "20%", delay: 1.2, color: "#ff3ea5" },
+  { top: "30%", left: "50%", delay: 0.7, color: "#ffd23f" },
+];
+
+const CUTSCENE_TIERS = ["prism", "prismSignature", "gilded", "champion", "echo", "siblings"];
+const CUTSCENE_SPARKLES = [
+  { top: "6%", left: "10%", delay: 0, color: "#fff" },
+  { top: "12%", left: "88%", delay: 0.6, color: "#ffd23f" },
+  { top: "26%", left: "48%", delay: 1.1, color: "#29e6d6" },
+  { top: "38%", left: "6%", delay: 0.3, color: "#ff3ea5" },
+  { top: "40%", left: "94%", delay: 1.6, color: "#fff" },
+  { top: "62%", left: "16%", delay: 0.9, color: "#7c3aed" },
+  { top: "66%", left: "82%", delay: 0.2, color: "#ffd23f" },
+  { top: "80%", left: "40%", delay: 1.4, color: "#29e6d6" },
+  { top: "86%", left: "68%", delay: 0.5, color: "#fff" },
+  { top: "20%", left: "30%", delay: 1.8, color: "#ff3ea5" },
+];
+
+function Card({ card, count = 0, owned = true, size = "normal", isNew = false, level }) {
+  const ref = useRef(null);
+  const allLevels = useContext(LevelsContext);
+  const [tilt, setTilt] = useState({ x: 0, y: 0 });
+  const ambientEchoType = useContext(EchoTypeContext);
+  const reduceMotion = useMemo(
+    () => typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    []
+  );
+  const card2 = card.tier === "echo" ? { ...card, echoType: ambientEchoType } : card;
+  const def = TIER_MAP[card2.tier];
+  const isHandler = card2.category === "handler";
+  const typeColor = colorForCard(card2);
+  const dark = shade(typeColor, -70);
+
+  const onMove = useCallback((e) => {
+    if (reduceMotion || !ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width;
+    const py = (e.clientY - rect.top) / rect.height;
+    setTilt({ x: (py - 0.5) * -14, y: (px - 0.5) * 14 });
+  }, [reduceMotion]);
+  const onLeave = useCallback(() => setTilt({ x: 0, y: 0 }), []);
+
+  if (!owned) {
+    return (
+      <div className={`card card-locked card-${size}`}>
+        <div className="locked-mark">?</div>
+        <div className="locked-label">{def.label}</div>
+      </div>
+    );
+  }
+
+  const frontStyle = {
+    background: `linear-gradient(155deg, ${shade(typeColor, 20)} 0%, ${typeColor} 45%, ${dark} 100%)`,
+    transform: `perspective(700px) rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)`,
+  };
+
+  return (
+    <div
+      ref={ref}
+      className={`card card-${size} card-group-${def.group} ${card.prism ? "card-prismfx" : ""}`}
+      style={frontStyle}
+      onMouseMove={onMove}
+      onMouseLeave={onLeave}
+    >
+      {(def.group === "star" || def.group === "prism" || def.group === "gilded" || def.group === "champion" || def.group === "echo" || def.group === "siblings") && <div className="card-shimmer" />}
+      {(def.group === "prism" || def.group === "champion" || def.group === "echo" || def.group === "siblings") && <div className="card-holo" />}
+      {(def.group === "prism" || def.group === "gilded" || def.group === "champion" || def.group === "echo" || def.group === "siblings") && (
+        <div className="card-sparkles">
+          {SPARKLE_POS.map((p, i) => (
+            <span key={i} style={{ top: p.top, left: p.left, animationDelay: `${p.delay}s`, color: p.color }}>✦</span>
+          ))}
+        </div>
+      )}
+      {isNew && <div className="card-new-flag">NEW</div>}
+      {card.isEvolution && <div className="card-evo-flag">EVOLVED</div>}
+      {count > 1 && <div className="card-count">×{count}</div>}
+      <div className="card-top">
+        <span className="card-tier-pips">{pips(card.tier)}</span>
+        <span className="card-type-icon">{def.group === "echo" ? (card2.echoType ? TYPE_MAP[card2.echoType].icon : "❂") : isHandler ? "🧭" : TYPE_MAP[card2.type].icon}</span>
+      </div>
+      <div className="card-art">
+        {(def.group === "star" || def.group === "prism" || def.group === "gilded" || def.group === "champion" || def.group === "echo" || def.group === "siblings") && <div className="card-rays" />}
+        <CreatureArt card={card2} />
+      </div>
+      <div className="card-body">
+        <div className="card-name">{card.name}</div>
+        <div className="card-sub">
+          {isHandler ? "Field Handler" : `HP ${card.hp}`}
+          {canLevel(card) && owned ? ` · Lv ${level != null ? level : ((allLevels[card.id] && allLevels[card.id].level) || 1)}` : ""}
+        </div>
+        {card.isEvolution && <div className="card-evo-sub">Evolved from {card.evolvesFromName}</div>}
+      </div>
+      <div className="card-tier-label">{def.label}</div>
+    </div>
+  );
+}
+
+function CardBack({ size = "normal", onClick }) {
+  return (
+    <div className={`card card-${size} card-back`} onClick={onClick}>
+      <div className="card-back-emblem">EW</div>
+    </div>
+  );
+}
+
+/* ============================== APP ============================== */
+
+function App() {
+  const basePool = useMemo(buildCardPool, []);
+  const genesisPool = useMemo(buildGenesisPool, []);
+  const pool = useMemo(() => [...basePool, ...genesisPool], [basePool, genesisPool]);
+  const [collection, setCollection] = useState({});
+  const [packsOpened, setPacksOpened] = useState(0);
+  const [battleWins, setBattleWins] = useState(0);
+  const [screen, setScreen] = useState("home");
+  const [pack, setPack] = useState(null); // { cards, isGodPack, isNew, phase: 'sequence'|'lineup', index, flipped }
+  const [spotlight, setSpotlight] = useState(null);
+  const [packShake, setPackShake] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const collectionRef = useRef({});
+  const coinsRef = useRef(0);
+  const movesRef = useRef({});
+  const [filterType, setFilterType] = useState("all");
+  const [filterTier, setFilterTier] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(120);
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved
+  const [battlePhase, setBattlePhase] = useState("select"); // select | fight | result
+  const [selectedTeamIds, setSelectedTeamIds] = useState([]);
+  const [battle, setBattle] = useState(null);
+  const [cutscene, setCutscene] = useState(null); // { card } while an 8s reveal cutscene is playing
+  const [echoType, setEchoType] = useState(null); // which elemental form Echo currently takes
+  const [trader, setTrader] = useState(null);           // { cardIds, hasEcho, expiresAt }
+  const [nextTraderAt, setNextTraderAt] = useState(0);  // timestamp the next trader arrives
+  const [clockNow, setClockNow] = useState(Date.now());
+  const [tradeTargetId, setTradeTargetId] = useState(null); // trader card being negotiated
+  const [offer, setOffer] = useState({});                   // cardId -> qty offered
+  const [detailCard, setDetailCard] = useState(null);       // card being inspected in the binder
+  const [coins, setCoins] = useState(0);                    // currency from selling cards
+  const [cardMoves, setCardMoves] = useState({});            // cardId -> [purchased moves]
+  const [cardLoadout, setCardLoadout] = useState({});        // cardId -> [equipped move ids]
+  const loadoutRef = useRef({});
+  const [swapInId, setSwapInId] = useState(null);           // move waiting to replace an equipped one
+  const [shopCardId, setShopCardId] = useState(null);        // card selected in the shop
+  const [shopNote, setShopNote] = useState("");
+  const [luckExpiresAt, setLuckExpiresAt] = useState(0);
+  const luckRef = useRef(0);
+  const [cardLevels, setCardLevels] = useState({});   // cardId -> { level, exp }
+  const [arenaLevel, setArenaLevel] = useState(1);    // opponent level for the next battle (float)
+  const levelsRef = useRef({});
+  const arenaRef = useRef(1);
+  const [autoSellTier, setAutoSellTier] = useState("common");
+  const [autoSellNote, setAutoSellNote] = useState("");
+  const [autoOpenDeckType, setAutoOpenDeckType] = useState("standard");
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [autoOpened, setAutoOpened] = useState(0);
+  const [autoLastCard, setAutoLastCard] = useState(null);
+  const [autoStopReason, setAutoStopReason] = useState("");
+  const autoIntervalRef = useRef(null);
+  const autoStatsRef = useRef({ startPacks: 0, opened: 0, bestCards: [] });
+  const [autoBestCards, setAutoBestCards] = useState([]);
+  const AUTO_BEST_CAP = 300;
+
+  useEffect(() => {
+    loadProgress().then((d) => {
+      setCollection(d.collection || {});
+      collectionRef.current = d.collection || {};
+      setPacksOpened(d.packsOpened || 0);
+      setBattleWins(d.battleWins || 0);
+      setEchoType(d.echoType || null);
+      setCoins(d.coins || 0);
+      setCardMoves(d.cardMoves || {});
+      setCardLoadout(d.cardLoadout || {});
+      loadoutRef.current = d.cardLoadout || {};
+      setLuckExpiresAt(d.luckExpiresAt || 0);
+      coinsRef.current = d.coins || 0;
+      movesRef.current = d.cardMoves || {};
+      luckRef.current = d.luckExpiresAt || 0;
+      setCardLevels(d.cardLevels || {});
+      setArenaLevel(d.arenaLevel || 1);
+      levelsRef.current = d.cardLevels || {};
+      arenaRef.current = d.arenaLevel || 1;
+      setLoaded(true);
+    });
+  }, []);
+  useEffect(() => { collectionRef.current = collection; }, [collection]);
+  useEffect(() => { coinsRef.current = coins; }, [coins]);
+  useEffect(() => { movesRef.current = cardMoves; }, [cardMoves]);
+  useEffect(() => { loadoutRef.current = cardLoadout; }, [cardLoadout]);
+  useEffect(() => { luckRef.current = luckExpiresAt; }, [luckExpiresAt]);
+  useEffect(() => { levelsRef.current = cardLevels; }, [cardLevels]);
+  useEffect(() => { arenaRef.current = arenaLevel; }, [arenaLevel]);
+  useEffect(() => { setVisibleCount(120); }, [filterType, filterTier]);
+
+  const goHome = () => { setSpotlight(null); setScreen("home"); };
+  const goBinder = () => { setSpotlight(null); setScreen("binder"); };
+  const goBattle = () => { setSpotlight(null); setScreen("battle"); };
+  const goTrader = () => { setSpotlight(null); setScreen("trader"); };
+  const goShop = () => { setSpotlight(null); setScreen("shop"); };
+
+  // Single place that writes progress — pass only the fields that changed.
+  const persist = (over = {}) => saveProgress({
+    collection: collectionRef.current,
+    packsOpened, battleWins, echoType,
+    coins: coinsRef.current,
+    cardMoves: movesRef.current,
+    cardLoadout: loadoutRef.current,
+    luckExpiresAt: luckRef.current,
+    cardLevels: levelsRef.current,
+    arenaLevel: arenaRef.current,
+    ...over,
+  });
+
+  const manualSave = async () => {
+    setSaveStatus("saving");
+    await persist({});
+    setSaveStatus("saved");
+    setTimeout(() => setSaveStatus("idle"), 2000);
+  };
+
+  const setEchoForm = (typeId) => {
+    setEchoType(typeId);
+    persist({ echoType: typeId });
+  };
+
+  const openPack = (deckType = "standard") => {
+    const premium = deckType === "premium";
+    const genesis = deckType === "genesis";
+    if (premium && coinsRef.current < PREMIUM_PACK_COST) return;
+    setPackShake(true);
+    setTimeout(() => {
+      const prev = collectionRef.current;
+      const luckActive = Date.now() < luckRef.current;
+      const result = genesis ? rollGenesisPack(genesisPool, luckActive) : rollPack(basePool, premium, luckActive);
+      const sorted = [...result.cards].sort((a, b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier));
+      const seen = new Set();
+      const isNew = sorted.map((c) => {
+        const n = !(prev[c.id] > 0) && !seen.has(c.id);
+        seen.add(c.id);
+        return n;
+      });
+      const nextCollection = { ...prev };
+      sorted.forEach((c) => { nextCollection[c.id] = (nextCollection[c.id] || 0) + 1; });
+      const nextPacksOpened = packsOpened + 1;
+      const nextCoins = coinsRef.current - (premium ? PREMIUM_PACK_COST : 0);
+      collectionRef.current = nextCollection;
+      coinsRef.current = nextCoins;
+      setCollection(nextCollection);
+      setPacksOpened(nextPacksOpened);
+      setCoins(nextCoins);
+      persist({ collection: nextCollection, packsOpened: nextPacksOpened, coins: nextCoins });
+      setSpotlight(null);
+      setCutscene(null);
+      setPack({ cards: sorted, isGodPack: result.isGodPack, isNew, deckType, phase: "sequence", index: 0, flipped: false });
+      setScreen("opening");
+      setPackShake(false);
+    }, 550);
+  };
+
+  const stopAutoOpen = (reason = "") => {
+    if (autoIntervalRef.current) { clearInterval(autoIntervalRef.current); autoIntervalRef.current = null; }
+    setAutoRunning(false);
+    if (reason) setAutoStopReason(reason);
+    setAutoBestCards(autoStatsRef.current.bestCards.slice());
+  };
+
+  const autoOpenTick = (deckType) => {
+    const premium = deckType === "premium";
+    const genesis = deckType === "genesis";
+    if (premium && coinsRef.current < PREMIUM_PACK_COST) {
+      stopAutoOpen("Stopped — not enough coins for another Prismatic pack.");
+      return;
+    }
+    const luckActive = Date.now() < luckRef.current;
+    const result = genesis ? rollGenesisPack(genesisPool, luckActive) : rollPack(basePool, premium, luckActive);
+    const next = { ...collectionRef.current };
+    result.cards.forEach((c) => { next[c.id] = (next[c.id] || 0) + 1; });
+    const nextCoins = coinsRef.current - (premium ? PREMIUM_PACK_COST : 0);
+    collectionRef.current = next;
+    coinsRef.current = nextCoins;
+    autoStatsRef.current.opened += 1;
+    const nextPacksOpened = autoStatsRef.current.startPacks + autoStatsRef.current.opened;
+    const bestOfPack = result.cards.reduce(
+      (best, c) => (TIER_ORDER.indexOf(c.tier) > TIER_ORDER.indexOf(best.tier) ? c : best),
+      result.cards[0]
+    );
+    if (autoStatsRef.current.bestCards.length < AUTO_BEST_CAP) autoStatsRef.current.bestCards.push(bestOfPack);
+
+    setCollection(next);
+    setCoins(nextCoins);
+    setPacksOpened(nextPacksOpened);
+    setAutoOpened(autoStatsRef.current.opened);
+    setAutoLastCard(bestOfPack);
+    persist({ collection: next, packsOpened: nextPacksOpened, coins: nextCoins });
+  };
+
+  const startAutoOpen = (deckType) => {
+    if (autoRunning) return;
+    if (deckType === "premium" && coinsRef.current < PREMIUM_PACK_COST) { setAutoStopReason("Not enough coins to start."); return; }
+    autoStatsRef.current = { startPacks: packsOpened, opened: 0, bestCards: [] };
+    setAutoOpened(0);
+    setAutoLastCard(null);
+    setAutoStopReason("");
+    setAutoBestCards([]);
+    setAutoRunning(true);
+    autoIntervalRef.current = setInterval(() => autoOpenTick(deckType), AUTO_OPEN_MS);
+  };
+
+  useEffect(() => () => { if (autoIntervalRef.current) clearInterval(autoIntervalRef.current); }, []);
+
+  const flipCurrent = () => {
+    if (!pack || pack.flipped || cutscene) return;
+    const card = pack.cards[pack.index];
+    if (CUTSCENE_TIERS.includes(card.tier)) {
+      setCutscene({ card });
+      setTimeout(() => {
+        setCutscene(null);
+        setSpotlight(colorForCard(card.tier === "echo" ? { ...card, echoType } : card));
+        setPack((p) => (p ? { ...p, flipped: true } : p));
+      }, 8000);
+    } else {
+      setSpotlight(isRareOrBetter(card) ? colorForCard(card) : null);
+      setPack({ ...pack, flipped: true });
+    }
+  };
+  const nextCard = () => {
+    if (!pack) return;
+    if (pack.index < pack.cards.length - 1) {
+      setSpotlight(null);
+      setPack({ ...pack, index: pack.index + 1, flipped: false });
+    } else {
+      setSpotlight(null);
+      setPack({ ...pack, phase: "lineup" });
+    }
+  };
+  const skipToLineup = () => {
+    setSpotlight(null);
+    setCutscene(null);
+    setPack((p) => (p ? { ...p, phase: "lineup", flipped: true, index: p.cards.length - 1 } : p));
+  };
+  const closePack = () => { setSpotlight(null); setCutscene(null); setPack(null); setScreen("home"); };
+
+  /* ---------- Battle ---------- */
+  const ownedCreatures = pool
+    .filter((c) => c.category === "creature" && collection[c.id] > 0)
+    .sort((a, b) => TIER_ORDER.indexOf(b.tier) - TIER_ORDER.indexOf(a.tier))
+    .slice(0, 150);
+
+  const toggleTeamCard = (id) => {
+    setSelectedTeamIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 3) return prev;
+      return [...prev, id];
+    });
+  };
+
+  const startBattle = () => {
+    const playerCards = selectedTeamIds.map((id) => pool.find((c) => c.id === id)).filter(Boolean);
+    if (playerCards.length < 3) return;
+    const aiCards = pickAiTeam(playerCards, pool);
+    const enemyLevel = Math.max(1, Math.min(MAX_LEVEL, Math.round(arenaRef.current)));
+    const hasBothSiblings = (collectionRef.current[NEON_CARD.id] > 0) && (collectionRef.current[DROGEN_CARD.id] > 0);
+    const mk = (c, withBought, level) => {
+      const boost = c.tier === "siblings" && hasBothSiblings ? SIBLING_BATTLE_BOOST : 1;
+      const maxHp = Math.round(battleMaxHp(c, level) * boost);
+      return {
+        card: c, level: canLevel(c) ? level : null,
+        hp: maxHp, maxHp, atk: Math.round(battleAtk(c, level) * boost),
+        moves: withBought ? equippedFor(c) : genMoves(c),
+      };
+    };
+    const levelOf = (c) => (levelsRef.current[c.id] && levelsRef.current[c.id].level) || 1;
+    setBattle({
+      playerTeam: playerCards.map((c) => mk(c, true, levelOf(c))),
+      aiTeam: aiCards.map((c) => mk(c, false, enemyLevel)),
+      enemyLevel,
+      expGains: {},
+      pIdx: 0, aIdx: 0,
+      log: hasBothSiblings && playerCards.some((c) => c.tier === "siblings")
+        ? [`The sibling bond surges! Opponent team: Lv.${enemyLevel}`]
+        : [`An opposing trainer (all cards Lv.${enemyLevel}) challenges you!`],
+      status: "ongoing",
+      reward: null,
+    });
+    setBattlePhase("fight");
+  };
+
+  const playerAttack = (move) => {
+    setBattle((prev) => {
+      if (!prev || prev.status !== "ongoing") return prev;
+      const attacker = prev.playerTeam[prev.pIdx];
+      const chosen = move || attacker.moves[0];
+      let aiTeam = [...prev.aiTeam];
+      let defender = { ...aiTeam[prev.aIdx] };
+      const mult = typeMultiplier(chosen.type, defender.card.type);
+      const dmg = Math.max(3, Math.round(attacker.atk * (chosen.power / 80) * (0.85 + Math.random() * 0.3) * mult));
+      defender.hp = Math.max(0, defender.hp - dmg);
+      aiTeam[prev.aIdx] = defender;
+      const eff = mult > 1 ? " — super effective!" : mult < 1 ? " — not very effective." : "";
+      const log = [...prev.log, `${attacker.card.name} used ${chosen.name} on ${defender.card.name} for ${dmg}${eff}`];
+
+      let aIdx = prev.aIdx, status = "ongoing";
+      let expGains = prev.expGains || {};
+      if (defender.hp <= 0) {
+        const gain = expYield(defender.card, prev.enemyLevel || 1);
+        // The card that lands the blow earns the EXP. Gods can't level, so their EXP is shared by teammates who can.
+        const recipients = canLevel(attacker.card)
+          ? [attacker.card.id]
+          : prev.playerTeam.filter((m) => canLevel(m.card)).map((m) => m.card.id);
+        if (recipients.length) {
+          const share = Math.max(1, Math.round(gain / recipients.length));
+          expGains = { ...expGains };
+          recipients.forEach((id) => { expGains[id] = (expGains[id] || 0) + share; });
+        }
+        log.push(`${defender.card.name} is knocked out!${recipients.length ? ` (+${gain} EXP)` : ""}`);
+        const nextIdx = aiTeam.findIndex((m, i) => i !== prev.aIdx && m.hp > 0);
+        if (nextIdx === -1) status = "won"; else aIdx = nextIdx;
+      }
+
+      let playerTeam = prev.playerTeam, pIdx = prev.pIdx;
+      if (status === "ongoing") {
+        const aiAttacker = aiTeam[aIdx];
+        let pDefender = { ...playerTeam[pIdx] };
+        // AI picks whichever of its moves would hit hardest
+        const aiMove = aiAttacker.moves.reduce((best, m) => {
+          const score = m.power * typeMultiplier(m.type, pDefender.card.type);
+          const bestScore = best.power * typeMultiplier(best.type, pDefender.card.type);
+          return score > bestScore ? m : best;
+        }, aiAttacker.moves[0]);
+        const mult2 = typeMultiplier(aiMove.type, pDefender.card.type);
+        const dmg2 = Math.max(3, Math.round(aiAttacker.atk * (aiMove.power / 80) * (0.85 + Math.random() * 0.3) * mult2));
+        pDefender.hp = Math.max(0, pDefender.hp - dmg2);
+        playerTeam = [...playerTeam];
+        playerTeam[pIdx] = pDefender;
+        const eff2 = mult2 > 1 ? " — super effective!" : mult2 < 1 ? " — not very effective." : "";
+        log.push(`${aiAttacker.card.name} used ${aiMove.name} on ${pDefender.card.name} for ${dmg2}${eff2}`);
+        if (pDefender.hp <= 0) {
+          log.push(`${pDefender.card.name} is knocked out!`);
+          const nextP = playerTeam.findIndex((m, i) => i !== pIdx && m.hp > 0);
+          if (nextP === -1) status = "lost"; else pIdx = nextP;
+        }
+      }
+      return { ...prev, aiTeam, playerTeam, aIdx, pIdx, expGains, log: log.slice(-6), status };
+    });
+  };
+
+  // Runs once when a battle ends: banks EXP, moves the arena level, and hands out rewards.
+  useEffect(() => {
+    if (!battle || battle.status === "ongoing" || battle.settled) return;
+    const won = battle.status === "won";
+
+    // 1) EXP and level-ups (EXP counts even if the battle was lost)
+    const nextLevels = { ...levelsRef.current };
+    const levelUps = [];
+    Object.entries(battle.expGains || {}).forEach(([id, amt]) => {
+      const card = pool.find((c) => c.id === id);
+      if (!card || !canLevel(card)) return;
+      const st = { ...(nextLevels[id] || { level: 1, exp: 0 }) };
+      const from = st.level;
+      st.exp += amt;
+      while (st.level < MAX_LEVEL && st.exp >= expToNext(st.level)) { st.exp -= expToNext(st.level); st.level += 1; }
+      if (st.level >= MAX_LEVEL) st.exp = 0;
+      nextLevels[id] = st;
+      if (st.level > from) levelUps.push({ id, name: card.name, from, to: st.level });
+    });
+
+    // 2) The arena only gets harder when you win: next opponent is 1.75x the level of this one
+    const nextArena = won ? Math.min(MAX_LEVEL, arenaRef.current * ARENA_GROWTH) : arenaRef.current;
+
+    // 3) Rewards — capture one opposing card (10% chance it becomes a Champion)
+    let reward = null, isChampionRoll = false, isNewReward = false;
+    let nextCollection = collectionRef.current, nextWins = battleWins;
+    if (won) {
+      const captured = battle.aiTeam[Math.floor(Math.random() * battle.aiTeam.length)].card;
+      isChampionRoll = Math.random() < CHAMPION_CAPTURE_CHANCE;
+      reward = captured;
+      if (isChampionRoll) {
+        const championPool = pool.filter((c) => c.tier === "champion");
+        reward = championPool[Math.floor(Math.random() * championPool.length)];
+      }
+      isNewReward = !(collectionRef.current[reward.id] > 0);
+      nextCollection = { ...collectionRef.current, [reward.id]: (collectionRef.current[reward.id] || 0) + 1 };
+      nextWins = battleWins + 1;
+    }
+    // Beating a full Lv.100 team earns the pick of ANY card in the game
+    const grandPrize = won && battle.enemyLevel >= MAX_LEVEL;
+
+    levelsRef.current = nextLevels;
+    arenaRef.current = nextArena;
+    collectionRef.current = nextCollection;
+    setCardLevels(nextLevels);
+    setArenaLevel(nextArena);
+    setCollection(nextCollection);
+    if (won) setBattleWins(nextWins);
+    persist({ cardLevels: nextLevels, arenaLevel: nextArena, collection: nextCollection, battleWins: nextWins });
+
+    setBattle((p) => (p ? {
+      ...p, settled: true, levelUps, grandPrize, prizeCard: null,
+      nextArena: Math.min(MAX_LEVEL, Math.round(nextArena)),
+      reward: reward ? { ...reward, isNew: isNewReward, isChampionCapture: isChampionRoll } : null,
+    } : p));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [battle && battle.status]);
+
+  /* Level 100 grand prize: pick any card in the game */
+  const [prizeSearch, setPrizeSearch] = useState("");
+  const [prizeTier, setPrizeTier] = useState("all");
+  const [prizeType, setPrizeType] = useState("all");
+  const [prizeDeck, setPrizeDeck] = useState("all");
+  const [prizePick, setPrizePick] = useState(null);
+  const [prizeVisible, setPrizeVisible] = useState(60);
+  const claimPrize = () => {
+    if (!prizePick || !battle || !battle.grandPrize || battle.prizeCard) return;
+    const next = { ...collectionRef.current, [prizePick.id]: (collectionRef.current[prizePick.id] || 0) + 1 };
+    collectionRef.current = next;
+    setCollection(next);
+    persist({ collection: next });
+    setBattle((p) => (p ? { ...p, prizeCard: prizePick } : p));
+    setPrizePick(null);
+  };
+
+  const resetBattle = () => {
+    setBattle(null); setSelectedTeamIds([]); setBattlePhase("select");
+    setPrizePick(null); setPrizeSearch(""); setPrizeTier("all"); setPrizeType("all"); setPrizeDeck("all"); setPrizeVisible(60);
+  };
+
+  /* ---------- Economy ---------- */
+  const sellCard = (card) => {
+    const owned = collectionRef.current[card.id] || 0;
+    if (owned <= 0) return;
+    const next = { ...collectionRef.current };
+    next[card.id] = owned - 1;
+    if (next[card.id] <= 0) delete next[card.id];
+    const gain = cardValue(card);
+    const nextCoins = coinsRef.current + gain;
+    collectionRef.current = next;
+    coinsRef.current = nextCoins;
+    setCollection(next);
+    setCoins(nextCoins);
+    persist({ collection: next, coins: nextCoins });
+    if (!next[card.id]) setDetailCard(null);
+  };
+
+  const sellAllOfCard = (card) => {
+    const owned = collectionRef.current[card.id] || 0;
+    if (owned <= 1) return;
+    const next = { ...collectionRef.current };
+    next[card.id] = 1;
+    const gain = cardValue(card) * (owned - 1);
+    const nextCoins = coinsRef.current + gain;
+    collectionRef.current = next;
+    coinsRef.current = nextCoins;
+    setCollection(next);
+    setCoins(nextCoins);
+    persist({ collection: next, coins: nextCoins });
+  };
+
+  const sellByRarity = (tierId) => {
+    if (GOD_TIERS.includes(tierId) || !TIER_MAP[tierId]) return;
+    const targets = pool.filter((c) => c.tier === tierId && (collectionRef.current[c.id] || 0) > 1);
+    if (targets.length === 0) { setAutoSellNote(`No duplicate ${TIER_MAP[tierId].label} cards to sell.`); return; }
+    const next = { ...collectionRef.current };
+    let gain = 0;
+    targets.forEach((c) => {
+      const n = next[c.id] || 0;
+      gain += cardValue(c) * (n - 1);
+      next[c.id] = 1;
+    });
+    const nextCoins = coinsRef.current + gain;
+    collectionRef.current = next;
+    coinsRef.current = nextCoins;
+    setCollection(next);
+    setCoins(nextCoins);
+    persist({ collection: next, coins: nextCoins });
+    setAutoSellNote(`Sold duplicates of ${targets.length} ${TIER_MAP[tierId].label} card${targets.length === 1 ? "" : "s"} (kept one each) for ◈ ${fmtValue(gain)}.`);
+  };
+
+  const buyLuckBoost = (opt) => {
+    if (coinsRef.current < opt.cost) { setShopNote("Not enough coins"); return; }
+    const base = Math.max(luckRef.current, Date.now());
+    const nextExpiry = base + opt.ms;
+    const nextCoins = coinsRef.current - opt.cost;
+    luckRef.current = nextExpiry;
+    coinsRef.current = nextCoins;
+    setLuckExpiresAt(nextExpiry);
+    setCoins(nextCoins);
+    persist({ luckExpiresAt: nextExpiry, coins: nextCoins });
+    setShopNote(`Luck Boost active! Rare+ odds are ×${LUCK_MULT} for ${opt.label}.`);
+  };
+
+  // The moves a card currently has equipped (what it actually uses in battle)
+  const equippedFor = (card) => equippedOf(card, movesRef.current[card.id], loadoutRef.current[card.id]);
+  const saveLoadout = (card, ids) => {
+    const next = { ...loadoutRef.current, [card.id]: ids };
+    loadoutRef.current = next;
+    setCardLoadout(next);
+    persist({ cardLoadout: next });
+  };
+
+  const buyMove = (card, move) => {
+    const learned = movesRef.current[card.id] || [];
+    const check = canLearnMove(card, move, learned);
+    if (!check.ok) { setShopNote(check.why); return; }
+    if (coinsRef.current < move.cost) { setShopNote("Not enough coins"); return; }
+    const before = equippedFor(card).map((m) => m.id); // lock in the current loadout so nothing changes silently
+    const nextMoves = { ...movesRef.current, [card.id]: [...learned, move] };
+    const nextCoins = coinsRef.current - move.cost;
+    const slots = moveSlotsFor(card);
+    const equipNow = before.length < slots;
+    const nextLoadout = { ...loadoutRef.current, [card.id]: equipNow ? [...before, move.id] : before };
+    movesRef.current = nextMoves;
+    coinsRef.current = nextCoins;
+    loadoutRef.current = nextLoadout;
+    setCardMoves(nextMoves);
+    setCardLoadout(nextLoadout);
+    setCoins(nextCoins);
+    persist({ cardMoves: nextMoves, cardLoadout: nextLoadout, coins: nextCoins });
+    setShopNote(`${card.name} learned ${move.name}${equipNow ? " and equipped it!" : ` — all ${slots} slots are full, swap it in below.`}`);
+  };
+
+  const equipMove = (card, moveId, replaceId) => {
+    const cur = equippedFor(card).map((m) => m.id);
+    if (cur.includes(moveId)) return;
+    const slots = moveSlotsFor(card);
+    if (cur.length < slots) { saveLoadout(card, [...cur, moveId]); setSwapInId(null); setShopNote("Move equipped."); return; }
+    if (!replaceId || !cur.includes(replaceId)) {
+      setSwapInId(moveId);
+      setShopNote(`All ${slots} slots are full — pick an equipped move to replace.`);
+      return;
+    }
+    saveLoadout(card, cur.map((id) => (id === replaceId ? moveId : id)));
+    setSwapInId(null);
+    setShopNote("Moves swapped!");
+  };
+  const unequipMove = (card, moveId) => {
+    const cur = equippedFor(card).map((m) => m.id);
+    if (cur.length <= 1) { setShopNote("A card needs at least one equipped move."); return; }
+    saveLoadout(card, cur.filter((id) => id !== moveId));
+  };
+
+  /* ---------- Trader lifecycle ---------- */
+
+  // Restore trader state on load (so the timer survives a refresh)
+  useEffect(() => {
+    const saved = loadTrader();
+    const now = Date.now();
+    if (saved && saved.trader && saved.trader.expiresAt > now) {
+      setTrader(saved.trader);
+      setNextTraderAt(saved.nextTraderAt || saved.trader.expiresAt + TRADER_GAP_MS);
+    } else if (saved && saved.nextTraderAt) {
+      setNextTraderAt(saved.nextTraderAt);
+    } else {
+      setNextTraderAt(now); // first-ever load: trader arrives right away
+    }
+  }, []);
+
+  // 1s clock so countdowns tick
+  useEffect(() => {
+    const t = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Spawn / expire the trader as the clock advances
+  useEffect(() => {
+    if (!loaded || !nextTraderAt) return;
+    const now = clockNow;
+    if (trader) {
+      if (now >= trader.expiresAt) {
+        const nAt = now + TRADER_GAP_MS;
+        setTrader(null);
+        setNextTraderAt(nAt);
+        setTradeTargetId(null);
+        setOffer({});
+        saveTrader({ trader: null, nextTraderAt: nAt });
+      }
+    } else if (now >= nextTraderAt) {
+      const stock = rollTraderStock(pool);
+      const t = { ...stock, expiresAt: now + TRADER_VISIT_MS };
+      setTrader(t);
+      saveTrader({ trader: t, nextTraderAt: t.expiresAt + TRADER_GAP_MS });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clockNow, loaded, nextTraderAt, trader]);
+
+  const tradeTarget = tradeTargetId ? pool.find((c) => c.id === tradeTargetId) : null;
+  const offerValue = Object.entries(offer).reduce((sum, [id, qty]) => {
+    const c = pool.find((x) => x.id === id);
+    return sum + (c ? cardValue(c) * qty : 0);
+  }, 0);
+
+  // Cards you own and could offer (never the card you're trying to get)
+  const tradableOwned = pool
+    .filter((c) => collection[c.id] > 0 && !GOD_TIERS.includes(c.tier) && c.id !== tradeTargetId)
+    .sort((a, b) => cardValue(a) - cardValue(b));
+
+  const [offerVisible, setOfferVisible] = useState(120);
+  const [offerCoins, setOfferCoins] = useState(0); // coins added to a card offer
+  const isGodTarget = !!tradeTarget && GOD_TIERS.includes(tradeTarget.tier);
+  const coinsOffered = isGodTarget ? 0 : Math.max(0, Math.min(coins, Math.floor(offerCoins) || 0));
+  const tradeCheck = tradeTarget && tradeTarget.tier !== "echo" ? evaluateTrade(tradeTarget, offerValue, coinsOffered) : null;
+  const selectTradeTarget = (id) => {
+    setTradeTargetId(id === tradeTargetId ? null : id);
+    setOffer({});
+    setOfferCoins(0);
+  };
+  // Tops the offer up with just enough coins for the cheapest option that still works
+  const fillCoins = () => {
+    if (!tradeTarget || isGodTarget) return;
+    const v = cardValue(tradeTarget);
+    if (offerValue >= v) { setOfferCoins(0); return; }
+    const need = offerValue > 0 ? v * TRADER_MIXED_MULT - offerValue : v * TRADER_COIN_ONLY_MULT;
+    setOfferCoins(Math.max(0, Math.min(coins, need)));
+  };
+  const addToOffer = (id) => {
+    setOffer((prev) => {
+      const owned = collection[id] || 0;
+      const cur = prev[id] || 0;
+      if (cur >= owned) return prev;
+      return { ...prev, [id]: cur + 1 };
+    });
+  };
+  const removeFromOffer = (id) => {
+    setOffer((prev) => {
+      const cur = prev[id] || 0;
+      if (cur <= 1) { const n = { ...prev }; delete n[id]; return n; }
+      return { ...prev, [id]: cur - 1 };
+    });
+  };
+
+  /* Echo's trade gate: own every non-Champion card in the original deck, plus at least 5 Champions */
+  const echoEligibility = useMemo(() => {
+    const missing = basePool.filter(
+      (c) => c.tier !== "echo" && c.tier !== "champion" && !(collection[c.id] > 0)
+    );
+    const championCount = basePool
+      .filter((c) => c.tier === "champion")
+      .reduce((s, c) => s + (collection[c.id] || 0), 0);
+    const gildedCards = basePool.filter((c) => c.tier === "gilded");
+    const gildedReady = gildedCards.every((c) => (collection[c.id] || 0) >= ECHO_COST.gildedEach);
+    const psCount = basePool
+      .filter((c) => c.tier === "prismSignature")
+      .reduce((s, c) => s + (collection[c.id] || 0), 0);
+    return {
+      missingCount: missing.length,
+      championCount,
+      gildedReady,
+      psCount,
+      canTrade:
+        missing.length === 0 &&
+        championCount >= ECHO_COST.champion &&
+        gildedReady &&
+        psCount >= ECHO_COST.prismSignature,
+    };
+  }, [collection, basePool]);
+
+  /* Genesis trade gate: own every Genesis card, but only need 5 of the 24 Champions */
+  const siblingEligibility = useMemo(() => {
+    const missing = genesisPool.filter(
+      (c) => c.tier !== "siblings" && c.tier !== "champion" && !(collection[c.id] > 0)
+    );
+    const championCount = genesisPool
+      .filter((c) => c.tier === "champion")
+      .reduce((s, c) => s + (collection[c.id] || 0), 0);
+    return {
+      missingCount: missing.length,
+      championCount,
+      canTrade: missing.length === 0 && championCount >= 5,
+    };
+  }, [collection, genesisPool]);
+
+  const buyWithCoins = () => {
+    if (!tradeTarget || !trader) return;
+    if (GOD_TIERS.includes(tradeTarget.tier)) return; // Echo, Neon & Drogen can't be bought with coins
+    const cost = cardValue(tradeTarget) * TRADER_COIN_ONLY_MULT;
+    if (coinsRef.current < cost) return;
+    const nextCoins = coinsRef.current - cost;
+    const next = { ...collectionRef.current, [tradeTarget.id]: (collectionRef.current[tradeTarget.id] || 0) + 1 };
+    coinsRef.current = nextCoins;
+    collectionRef.current = next;
+    setCoins(nextCoins);
+    setCollection(next);
+    persist({ collection: next, coins: nextCoins });
+    const remaining = { ...trader, cardIds: trader.cardIds.filter((id) => id !== tradeTarget.id) };
+    setTrader(remaining);
+    saveTrader({ trader: remaining, nextTraderAt: remaining.expiresAt + TRADER_GAP_MS });
+    setTradeTargetId(null);
+    setOffer({});
+    setOfferCoins(0);
+  };
+
+
+  const buildEchoPayment = () => {
+    const pay = {};
+    basePool.filter((c) => c.tier === "gilded").forEach((c) => { pay[c.id] = ECHO_COST.gildedEach; });
+    let need = ECHO_COST.champion;
+    for (const c of basePool.filter((x) => x.tier === "champion")) {
+      if (need <= 0) break;
+      const take = Math.min(need, collection[c.id] || 0);
+      if (take > 0) { pay[c.id] = (pay[c.id] || 0) + take; need -= take; }
+    }
+    need = ECHO_COST.prismSignature;
+    for (const c of basePool.filter((x) => x.tier === "prismSignature")) {
+      if (need <= 0) break;
+      const take = Math.min(need, collection[c.id] || 0);
+      if (take > 0) { pay[c.id] = (pay[c.id] || 0) + take; need -= take; }
+    }
+    return pay;
+  };
+
+  const refreshTraderStock = () => {
+    if (!trader) return;
+    if (coinsRef.current < TRADER_REFRESH_COST) return;
+    const stock = rollTraderStock(pool);
+    const nextTrader = { ...trader, cardIds: stock.cardIds, hasEcho: stock.hasEcho };
+    const nextCoins = coinsRef.current - TRADER_REFRESH_COST;
+    coinsRef.current = nextCoins;
+    setTrader(nextTrader);
+    setCoins(nextCoins);
+    setTradeTargetId(null);
+    setOffer({});
+    saveTrader({ trader: nextTrader, nextTraderAt: nextTrader.expiresAt + TRADER_GAP_MS });
+    persist({ coins: nextCoins });
+  };
+
+  const executeTrade = () => {
+    if (!tradeTarget || !trader) return;
+    if (tradeTarget.tier === "siblings" && !siblingEligibility.canTrade) return;
+    const isEcho = tradeTarget.tier === "echo";
+    if (isEcho && !echoEligibility.canTrade) return;
+    if (!isEcho && !(tradeCheck && tradeCheck.ok)) return;
+    const coinCost = isEcho ? 0 : coinsOffered;
+    if (coinCost > coinsRef.current) return;
+
+    const payment = isEcho ? buildEchoPayment() : offer;
+    const next = { ...collectionRef.current };
+    Object.entries(payment).forEach(([id, qty]) => {
+      next[id] = (next[id] || 0) - qty;
+      if (next[id] <= 0) delete next[id];
+    });
+    next[tradeTarget.id] = (next[tradeTarget.id] || 0) + 1;
+    const nextCoins = coinsRef.current - coinCost;
+
+    collectionRef.current = next;
+    coinsRef.current = nextCoins;
+    setCollection(next);
+    setCoins(nextCoins);
+    persist({ collection: next, coins: nextCoins });
+
+    const remaining = { ...trader, cardIds: trader.cardIds.filter((id) => id !== tradeTarget.id) };
+    setTrader(remaining);
+    saveTrader({ trader: remaining, nextTraderAt: remaining.expiresAt + TRADER_GAP_MS });
+    setTradeTargetId(null);
+    setOffer({});
+    setOfferCoins(0);
+  };
+
+  const msLeft = trader ? Math.max(0, trader.expiresAt - clockNow) : Math.max(0, nextTraderAt - clockNow);
+  const fmtClock = (ms) => {
+    const s = Math.ceil(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+
+  const uniqueOwned = Object.keys(collection).length;
+  const totalCards = pool.length;
+  const totalPulled = Object.values(collection).reduce((a, b) => a + b, 0);
+  const pct = Math.round((uniqueOwned / totalCards) * 100);
+
+  const filteredPool = pool.filter(
+    (c) => (filterType === "all" || c.type === filterType) && (filterTier === "all" || c.tier === filterTier)
+  );
+  const visiblePool = filteredPool.slice(0, visibleCount);
+
+  const bestCard = pack ? pack.cards[pack.cards.length - 1] : null;
+  const currentCard = pack ? pack.cards[pack.index] : null;
+
+  return (
+    <EchoTypeContext.Provider value={echoType}>
+    <LevelsContext.Provider value={cardLevels}>
+    <div className="app">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
+
+        * { box-sizing: border-box; }
+        .app {
+          position: relative; min-height: 100vh; background: #0a0812;
+          color: #f1eef7; font-family: 'Inter', sans-serif; padding-bottom: 40px; overflow: hidden;
+        }
+        button { font-family: inherit; cursor: pointer; }
+
+        .bg-glow {
+          position: fixed; inset: 0; pointer-events: none; z-index: 0; transition: background 0.8s ease;
+        }
+        .bg-base {
+          position: fixed; inset: 0; pointer-events: none; z-index: 0;
+          background: radial-gradient(ellipse at 50% -10%, #241b3d 0%, #0a0812 55%, #060509 100%);
+        }
+        .topbar, .home-wrap, .opening-wrap, .binder-wrap, .battle-wrap, .save-hint { position: relative; z-index: 1; }
+
+        .topbar {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 18px 24px; flex-wrap: wrap; gap: 12px;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .logo {
+          font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 26px;
+          letter-spacing: 2px; background: linear-gradient(90deg, #ff3ea5, #29e6d6);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .nav-tabs { display: flex; gap: 8px; }
+        .nav-tab {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+          color: #cfc9de; padding: 8px 16px; border-radius: 999px; font-weight: 600;
+          font-size: 13px; letter-spacing: 0.5px; transition: all 0.2s;
+        }
+        .nav-tab.active { background: linear-gradient(90deg, #ff3ea5, #7c3aed); color: #fff; border-color: transparent; }
+        .stat-chips { display: flex; gap: 10px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #9d96b5; }
+        .stat-chip { background: rgba(255,255,255,0.04); padding: 6px 12px; border-radius: 8px; }
+        .stat-chip b { color: #f1eef7; }
+        .save-btn {
+          background: rgba(41,230,214,0.12); border: 1px solid rgba(41,230,214,0.4); color: #7ff2e6;
+          padding: 6px 14px; border-radius: 999px; font-weight: 600; font-size: 12px; font-family: 'Inter', sans-serif;
+          transition: all 0.2s;
+        }
+        .save-btn:hover { background: rgba(41,230,214,0.22); }
+        .save-btn:disabled { opacity: 0.7; cursor: default; }
+        .save-hint { text-align: center; font-size: 10.5px; color: #55506b; padding: 6px 20px 0; }
+
+        /* ---------- HOME ---------- */
+        .home-wrap { display: flex; flex-direction: column; align-items: center; padding: 48px 20px 20px; }
+        .pack-art {
+          width: min(260px, 60vw); aspect-ratio: 5/7; border-radius: 18px;
+          background: conic-gradient(from 200deg, #ff3ea5, #ffd23f, #29e6d6, #7c3aed, #ff3ea5);
+          padding: 6px; box-shadow: 0 30px 60px -20px rgba(124,58,237,0.5), 0 0 0 1px rgba(255,255,255,0.08);
+        }
+        .pack-art.shaking { animation: packshake 0.55s cubic-bezier(.36,.07,.19,.97); }
+        @keyframes packshake {
+          10%,90% { transform: translateX(-2px) rotate(-1deg); }
+          20%,80% { transform: translateX(4px) rotate(2deg); }
+          30%,50%,70% { transform: translateX(-8px) rotate(-4deg) scale(1.02); }
+          40%,60% { transform: translateX(8px) rotate(4deg) scale(1.02); }
+          100% { transform: translateX(0) rotate(0); }
+        }
+        .pack-art-inner {
+          width: 100%; height: 100%; border-radius: 14px; background: #0d0a17;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 10px; position: relative; overflow: hidden;
+        }
+        .pack-art-inner::before {
+          content: ''; position: absolute; inset: 0;
+          background: radial-gradient(circle at 50% 30%, rgba(255,62,165,0.25), transparent 60%);
+        }
+        .pack-brand { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 4px; color: #efe9ff; z-index: 1; }
+        .pack-icons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 140px; z-index: 1; font-size: 15px; opacity: 0.85; }
+        .pack-label { font-size: 11px; letter-spacing: 3px; color: #a99fcf; z-index: 1; }
+
+        .open-btn {
+          margin-top: 26px; padding: 14px 38px; border: none; border-radius: 999px;
+          background: linear-gradient(90deg, #ff3ea5, #7c3aed 55%, #29e6d6);
+          color: #fff; font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 17px;
+          letter-spacing: 1.5px; box-shadow: 0 12px 30px -10px rgba(255,62,165,0.6);
+          transition: transform 0.15s;
+        }
+        .open-btn:hover { transform: translateY(-2px); }
+        .open-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+        .home-stats { display: flex; gap: 26px; margin-top: 34px; flex-wrap: wrap; justify-content: center; }
+        .home-stat { text-align: center; }
+        .home-stat .num { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 600; color: #fff; }
+        .home-stat .lbl { font-size: 11px; letter-spacing: 1.5px; color: #948dae; text-transform: uppercase; margin-top: 2px; }
+
+        .odds-note { margin-top: 40px; max-width: 480px; text-align: center; color: #7d7594; font-size: 12.5px; line-height: 1.6; }
+
+        /* ---------- CARD ---------- */
+        .card {
+          position: relative; border-radius: 12px; overflow: hidden;
+          display: flex; flex-direction: column; gap: 4px;
+          padding: 10px; user-select: none; will-change: transform;
+          border: 2px solid rgba(255,255,255,0.35);
+        }
+        .card-normal { width: 132px; height: 185px; }
+        .card-small { width: 96px; height: 134px; }
+        .card-large { width: min(240px, 78vw); aspect-ratio: 5/7; height: auto; padding: 16px; }
+        .card-large .card-name { font-size: 19px; }
+        .card-large .card-sub { font-size: 13px; }
+        .card-large .card-tier-label { font-size: 11px; padding: 4px 8px; }
+        .card-large .card-type-icon { font-size: 20px; }
+        .card-large .card-tier-pips { font-size: 14px; }
+
+        .card-group-base { border-color: rgba(255,255,255,0.25); }
+        .card-group-star { border-color: #e8e2f5; animation: star-pulse 2.6s ease-in-out infinite; }
+        .card-group-prism { border-color: #29e6d6; animation: prism-pulse 3s ease-in-out infinite; }
+        .card-group-gilded { border-color: #f0b429; border-width: 3px; animation: gilded-pulse 2.2s ease-in-out infinite; }
+        @keyframes star-pulse {
+          0%,100% { box-shadow: 0 0 18px -4px rgba(255,255,255,0.4); }
+          50% { box-shadow: 0 0 30px 0px rgba(255,255,255,0.75); }
+        }
+        @keyframes prism-pulse {
+          0%,100% { box-shadow: 0 0 22px -4px rgba(41,230,214,0.65); }
+          33% { box-shadow: 0 0 28px 0px rgba(255,62,165,0.6); }
+          66% { box-shadow: 0 0 28px 0px rgba(124,58,237,0.65); }
+        }
+        @keyframes gilded-pulse {
+          0%,100% { box-shadow: 0 0 26px -2px rgba(240,180,41,0.75), 0 0 0 1px rgba(255,235,180,0.35) inset; }
+          50% { box-shadow: 0 0 46px 4px rgba(255,220,140,0.95), 0 0 0 2px rgba(255,244,210,0.65) inset; }
+        }
+
+        .card-art { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; z-index: 2; min-height: 0; }
+        .creature-svg { position: relative; z-index: 2; width: 76%; height: 76%; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.4)); }
+        .card-small .creature-svg { width: 84%; height: 84%; }
+        .card-rays {
+          position: absolute; z-index: 1; width: 92%; height: 92%; margin: auto; inset: 0; border-radius: 50%;
+          background: repeating-conic-gradient(from 0deg, rgba(255,255,255,0.28) 0deg 4deg, transparent 4deg 18deg);
+          animation: holo-spin 10s linear infinite; opacity: 0.55; pointer-events: none;
+        }
+
+        .card-sparkles { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+        .card-sparkles span {
+          position: absolute; font-size: 10px; opacity: 0; text-shadow: 0 0 5px currentColor;
+          animation: twinkle 2.4s ease-in-out infinite;
+        }
+        @keyframes twinkle {
+          0%, 100% { opacity: 0; transform: scale(0.3) rotate(0deg); }
+          50% { opacity: 1; transform: scale(1.15) rotate(45deg); }
+        }
+
+        .card-shimmer {
+          position: absolute; inset: 0; pointer-events: none; mix-blend-mode: overlay;
+          background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.65) 48%, transparent 62%);
+          background-size: 250% 250%; animation: shimmer 3.2s ease-in-out infinite;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -50% 0; } }
+        .card-holo {
+          position: absolute; inset: 0; pointer-events: none; opacity: 0.55; mix-blend-mode: color-dodge;
+          background: conic-gradient(from 0deg, #ff3ea5, #ffd23f, #29e6d6, #7c3aed, #ff3ea5);
+          animation: holo-spin 5s linear infinite;
+        }
+        @keyframes holo-spin { to { transform: rotate(360deg); } }
+        .card-group-star .card-name, .card-group-prism .card-name {
+          text-shadow: 0 0 8px rgba(255,255,255,0.65), 0 1px 4px rgba(0,0,0,0.6);
+        }
+        .card-group-gilded .card-name {
+          color: #fff8e1; text-shadow: 0 0 10px rgba(255,215,120,0.95), 0 1px 4px rgba(0,0,0,0.6);
+        }
+        .card-group-gilded .card-tier-label {
+          background: linear-gradient(90deg, #8a660f, #f0b429 50%, #8a660f); color: #241a02; font-weight: 700;
+        }
+        .card-group-champion { border-color: #fff; border-width: 3px; animation: champion-pulse 2.1s ease-in-out infinite; }
+        @keyframes champion-pulse {
+          0%,100% { box-shadow: 0 0 28px 0 rgba(255,62,165,0.75); }
+          25% { box-shadow: 0 0 32px 2px rgba(255,210,63,0.8); }
+          50% { box-shadow: 0 0 36px 4px rgba(41,230,214,0.85); }
+          75% { box-shadow: 0 0 32px 2px rgba(124,58,237,0.8); }
+        }
+        .card-group-champion .card-name { color: #fff; text-shadow: 0 0 12px rgba(255,255,255,0.9), 0 1px 4px rgba(0,0,0,0.6); }
+        .card-group-champion .card-tier-label {
+          background: linear-gradient(90deg, #ff3ea5, #ffd23f, #29e6d6, #7c3aed); color: #1a1220; font-weight: 700;
+        }
+        .card-group-echo { border-color: #fff; border-width: 3px; animation: echo-pulse 1.8s ease-out infinite; }
+        @keyframes echo-pulse {
+          0% { box-shadow: 0 0 0 0 rgba(255,255,255,0.9), 0 0 0 0 rgba(255,255,255,0.5), 0 0 0 0 rgba(255,255,255,0.25); }
+          100% { box-shadow: 0 0 0 6px rgba(255,255,255,0), 0 0 0 16px rgba(255,255,255,0), 0 0 0 28px rgba(255,255,255,0); }
+        }
+        .card-group-echo .card-name { color: #fff; text-shadow: 0 0 14px rgba(255,255,255,1), 0 1px 4px rgba(0,0,0,0.6); }
+        .card-group-echo .card-tier-label { background: linear-gradient(90deg, #e5e2ff, #ffffff, #e5e2ff); color: #241a3d; font-weight: 700; }
+        .card-group-siblings { border-color: #29e6d6; border-width: 3px; animation: sibling-pulse 2s ease-in-out infinite; }
+        @keyframes sibling-pulse {
+          0%,100% { box-shadow: 0 0 28px 0 rgba(41,230,214,0.85); }
+          50% { box-shadow: 0 0 34px 3px rgba(255,124,44,0.85); }
+        }
+        .card-group-siblings .card-name { color: #fff; text-shadow: 0 0 12px rgba(41,230,214,0.9), 0 1px 4px rgba(0,0,0,0.6); }
+        .card-group-siblings .card-tier-label { background: linear-gradient(90deg, #29e6d6, #ff7c2c); color: #0c1c1a; font-weight: 700; }
+
+        .card-top { display: flex; justify-content: space-between; align-items: center; z-index: 2; }
+        .card-tier-pips { font-size: 11px; letter-spacing: 1px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+        .card-type-icon { font-size: 16px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5)); }
+        .card-name { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 14px; line-height: 1.1; text-shadow: 0 1px 4px rgba(0,0,0,0.6); }
+        .card-sub { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: rgba(255,255,255,0.85); margin-top: 3px; z-index: 2; }
+        .card-tier-label {
+          z-index: 2; font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+          background: rgba(0,0,0,0.35); border-radius: 5px; padding: 3px 6px; align-self: flex-start;
+        }
+        .card-new-flag {
+          position: absolute; top: 8px; right: -26px; transform: rotate(40deg);
+          background: #ffd23f; color: #1a1408; font-size: 9px; font-weight: 700;
+          padding: 2px 30px; z-index: 3; letter-spacing: 1px;
+        }
+        .card-evo-flag {
+          position: absolute; top: 8px; left: -26px; transform: rotate(-40deg);
+          background: #22c55e; color: #06210f; font-size: 9px; font-weight: 700;
+          padding: 2px 30px; z-index: 3; letter-spacing: 1px;
+        }
+        .card-evo-sub { font-size: 8.5px; color: #8ff5c2; margin-top: 1px; z-index: 2; font-family: 'JetBrains Mono', monospace; }
+        .card-small .card-evo-sub { display: none; }
+        .card-count {
+          position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.55);
+          border-radius: 999px; padding: 2px 8px; font-size: 10px; font-family: 'JetBrains Mono', monospace; z-index: 3;
+        }
+
+        .card-locked {
+          background: repeating-linear-gradient(135deg, #17131f, #17131f 8px, #1d1826 8px, #1d1826 16px);
+          border-color: rgba(255,255,255,0.08); align-items: center; justify-content: center; gap: 6px;
+        }
+        .locked-mark { font-family: 'Rajdhani', sans-serif; font-size: 30px; color: #3d3752; font-weight: 700; }
+        .locked-label { font-size: 9px; color: #4a4460; letter-spacing: 1px; text-transform: uppercase; }
+
+        .card-back {
+          background: linear-gradient(155deg, #2a2050, #120e24); align-items: center; justify-content: center;
+          border-color: rgba(255,255,255,0.15); cursor: pointer; transition: transform 0.15s;
+        }
+        .card-back:hover { transform: translateY(-4px); }
+        .card-back-emblem {
+          font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 26px; letter-spacing: 1px;
+          color: rgba(255,255,255,0.5); border: 2px solid rgba(255,255,255,0.25); border-radius: 50%;
+          width: 52px; height: 52px; display: flex; align-items: center; justify-content: center;
+        }
+
+        /* ---------- OPENING ---------- */
+        .opening-wrap { padding: 40px 20px; display: flex; flex-direction: column; align-items: center; }
+        .god-banner {
+          font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 22px; letter-spacing: 4px;
+          background: conic-gradient(from 0deg, #ff3ea5, #ffd23f, #29e6d6, #7c3aed, #ff3ea5);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+          animation: holo-spin 4s linear infinite reverse; margin-bottom: 18px; text-align: center;
+        }
+        .sequence-progress { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #948dae; margin-bottom: 18px; letter-spacing: 1px; }
+        .sequence-stage { display: flex; justify-content: center; align-items: center; min-height: 320px; }
+        .tap-hint { font-size: 12px; color: #7d7594; letter-spacing: 0.5px; }
+
+        .reveal-grid {
+          display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; justify-items: center;
+          max-width: 640px;
+        }
+        @media (max-width: 560px) { .reveal-grid { grid-template-columns: repeat(2, 1fr); } }
+
+        .opening-actions { display: flex; gap: 14px; margin-top: 26px; flex-wrap: wrap; justify-content: center; align-items: center; }
+        .ghost-btn {
+          background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); color: #e9e5f5;
+          padding: 11px 24px; border-radius: 999px; font-weight: 600; font-size: 13.5px; letter-spacing: 0.5px;
+        }
+        .ghost-btn:hover { background: rgba(255,255,255,0.12); }
+        .primary-btn { background: linear-gradient(90deg, #ff3ea5, #7c3aed); border: none; color: #fff; }
+        .best-pull-banner {
+          margin-top: 26px; text-align: center; color: #cfc9de; font-size: 13px;
+          background: rgba(255,255,255,0.04); padding: 12px 20px; border-radius: 12px;
+        }
+        .best-pull-banner b { color: #fff; font-family: 'Rajdhani', sans-serif; font-size: 16px; }
+
+        /* ---------- BINDER ---------- */
+        .binder-wrap { padding: 28px 20px; max-width: 980px; margin: 0 auto; }
+        .binder-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+        .binder-title { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 22px; }
+        .binder-pct { font-family: 'JetBrains Mono', monospace; color: #29e6d6; font-size: 13px; }
+        .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; align-items: center; }
+        .echo-panel {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.18); border-radius: 14px;
+          padding: 16px 18px; margin-bottom: 20px;
+        }
+        .echo-panel-title { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 1px; color: #fff; margin-bottom: 4px; }
+        .echo-panel-sub { font-size: 12px; color: #948dae; margin-bottom: 12px; }
+        .echo-type-row { display: flex; flex-wrap: wrap; gap: 8px; }
+        .echo-type-btn {
+          border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.04); color: #cfc9de;
+          border-radius: 999px; padding: 6px 13px; font-size: 12.5px; font-weight: 600;
+        }
+        .echo-type-btn:hover { background: rgba(255,255,255,0.1); }
+        .echo-type-btn.active { background: linear-gradient(90deg, #ff3ea5, #29e6d6); color: #fff; border-color: transparent; }
+
+        /* ---------- TRADER ---------- */
+        .trader-wrap { padding: 28px 20px; max-width: 980px; margin: 0 auto; position: relative; z-index: 1; }
+        .trader-dot {
+          display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #29e6d6;
+          margin-left: 6px; vertical-align: middle; box-shadow: 0 0 8px #29e6d6;
+          animation: trader-blink 1.4s ease-in-out infinite;
+        }
+        @keyframes trader-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .trader-timer {
+          font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #948dae;
+          background: rgba(255,255,255,0.04); padding: 6px 12px; border-radius: 999px;
+        }
+        .trader-timer.here { color: #7ff2e6; border: 1px solid rgba(41,230,214,0.4); }
+        .trader-stock, .offer-pool { margin-bottom: 8px; }
+        .offer-pool { max-height: 340px; overflow-y: auto; padding: 4px; }
+        .trade-pick { cursor: pointer; border-radius: 12px; padding: 3px; transition: transform 0.15s; text-align: center; }
+        .trade-pick:hover { transform: translateY(-3px); }
+        .trade-pick.picked { background: linear-gradient(90deg, #ff3ea5, #29e6d6); box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
+        .trade-pick.exhausted { opacity: 0.35; cursor: default; }
+        .trade-pick.exhausted:hover { transform: none; }
+        .value-chip {
+          margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #ffd23f; letter-spacing: 0.3px;
+        }
+        .trade-panel, .echo-trade-panel {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.18);
+          border-radius: 14px; padding: 16px 18px; margin-top: 18px;
+        }
+        .trade-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .trade-balance {
+          font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #ffb4c8;
+          background: rgba(255,62,165,0.12); border: 1px solid rgba(255,62,165,0.35);
+          padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+        }
+        .trade-balance.ok { color: #8ff5c2; background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.4); }
+        .offer-row {
+          display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; margin-bottom: 12px;
+          background: rgba(0,0,0,0.25); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.15);
+        }
+        .offer-item { cursor: pointer; text-align: center; transition: transform 0.15s; }
+        .offer-item:hover { transform: translateY(-3px); }
+        .req-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+        .req { font-size: 12.5px; color: #ffb4c8; font-family: 'Inter', sans-serif; }
+        .req.ok { color: #8ff5c2; }
+        .missing-badge {
+          position: absolute; z-index: 5; margin-left: 2px; margin-top: 2px;
+          background: #29e6d6; color: #04231f; font-size: 8.5px; font-weight: 700;
+          padding: 2px 7px; border-radius: 999px; letter-spacing: 0.8px;
+          box-shadow: 0 0 10px rgba(41,230,214,0.7);
+        }
+        .trade-pick { position: relative; }
+
+        /* ---------- MOVE BUTTONS ---------- */
+        .move-row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+        .move-btn {
+          display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+          background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.2);
+          color: #f1eef7; padding: 11px 18px; border-radius: 12px; min-width: 165px; text-align: left;
+          transition: all 0.15s;
+        }
+        .move-btn:hover { background: rgba(255,255,255,0.13); transform: translateY(-2px); }
+        .move-btn.super { border-color: rgba(34,197,94,0.7); box-shadow: 0 0 16px -4px rgba(34,197,94,0.6); }
+        .move-btn.weak { border-color: rgba(239,68,68,0.5); opacity: 0.85; }
+        .move-name { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 15px; }
+        .move-meta { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #a99fcf; }
+
+        /* ---------- DETAIL MODAL ---------- */
+        .binder-cell { cursor: pointer; transition: transform 0.15s; }
+        .binder-cell:hover { transform: translateY(-4px); }
+        .detail-overlay {
+          position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+          background: rgba(4,3,8,0.88); padding: 20px; overflow-y: auto;
+          animation: cutscene-fade-in 0.25s ease;
+        }
+        .detail-modal {
+          position: relative; background: #140f22; border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 18px; padding: 24px; max-width: 720px; width: 100%; max-height: 92vh; overflow-y: auto;
+        }
+        .detail-close {
+          position: absolute; top: 14px; right: 14px; background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(255,255,255,0.18); color: #e9e5f5; width: 30px; height: 30px;
+          border-radius: 50%; font-size: 13px; line-height: 1;
+        }
+        .detail-close:hover { background: rgba(255,255,255,0.18); }
+        .detail-body { display: flex; gap: 24px; flex-wrap: wrap; }
+        .detail-card-col { flex: 0 0 auto; display: flex; justify-content: center; }
+        .detail-info { flex: 1 1 300px; min-width: 260px; }
+        .detail-name { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 26px; line-height: 1.1; margin-bottom: 8px; }
+        .detail-tags { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+        .detail-tag {
+          font-size: 11.5px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
+          padding: 4px 10px; border-radius: 999px; color: #d8d3e8;
+        }
+        .detail-tag.gold { color: #ffd23f; border-color: rgba(255,210,63,0.35); }
+        .detail-owned { font-size: 12px; color: #8ff5c2; margin-bottom: 4px; }
+        .detail-unowned { font-size: 12px; color: #7d7594; margin-bottom: 4px; }
+        .detail-section-title {
+          font-size: 10.5px; letter-spacing: 2px; text-transform: uppercase; color: #7d7594;
+          margin: 18px 0 8px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 5px;
+        }
+        .stat-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+        .stat-box { background: rgba(255,255,255,0.05); border-radius: 10px; padding: 10px 14px; text-align: center; flex: 1 1 70px; }
+        .stat-num { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 600; color: #fff; }
+        .stat-lbl { font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: #948dae; margin-top: 2px; }
+        .move-card { background: rgba(255,255,255,0.05); border-radius: 10px; padding: 10px 13px; margin-bottom: 8px; }
+        .move-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .move-card-name { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 15.5px; }
+        .move-card-pwr { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #ffd23f; white-space: nowrap; }
+        .move-card-type { font-size: 11px; color: #a99fcf; margin-top: 2px; }
+        .matchup-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 7px; }
+        .matchup-lbl { font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; min-width: 66px; }
+        .matchup-lbl.up { color: #8ff5c2; }
+        .matchup-lbl.down { color: #ffb4c8; }
+        .matchup-pill { font-size: 11.5px; background: rgba(255,255,255,0.06); padding: 3px 9px; border-radius: 999px; color: #d8d3e8; }
+        .detail-evo { font-size: 11.5px; color: #8ff5c2; margin-top: 12px; }
+
+        /* ---------- ECONOMY / SHOP ---------- */
+        .coins-chip { color: #ffd23f; border: 1px solid rgba(255,210,63,0.3); }
+        .coins-chip b { color: #ffd23f; }
+        .pack-shelf { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+        .pack-option { display: flex; flex-direction: column; align-items: center; }
+        .pack-art.premium {
+          background: conic-gradient(from 40deg, #ffd23f, #fff6b0, #29e6d6, #ff3ea5, #7c3aed, #ffd23f);
+          box-shadow: 0 30px 60px -18px rgba(255,210,63,0.45), 0 0 0 1px rgba(255,255,255,0.14);
+        }
+        .premium-brand {
+          background: linear-gradient(90deg, #ffd23f, #fff6b0, #ffd23f);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .premium-btn { background: linear-gradient(90deg, #f0b429, #ffd23f 55%, #f0b429); color: #241a02; }
+        .pack-art.genesis {
+          background: conic-gradient(from 40deg, #ff2ec4, #ff9ee9, #7c3aed, #29e6d6, #ff2ec4);
+          box-shadow: 0 30px 60px -18px rgba(255,46,196,0.45), 0 0 0 1px rgba(255,255,255,0.14);
+        }
+        .genesis-brand {
+          background: linear-gradient(90deg, #ff2ec4, #d8b4fe, #ff2ec4);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .genesis-btn { background: linear-gradient(90deg, #ff2ec4, #7c3aed 55%, #ff2ec4); color: #fff; }
+        .pack-price { margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #ffd23f; }
+        .pack-price.free { color: #7d7594; }
+        .detail-actions { margin-top: 18px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; }
+        .sell-btn {
+          background: rgba(255,210,63,0.12); border: 1px solid rgba(255,210,63,0.45); color: #ffd23f;
+          padding: 9px 18px; border-radius: 999px; font-weight: 600; font-size: 13px;
+        }
+        .sell-btn:hover { background: rgba(255,210,63,0.22); }
+        .sell-warn { font-size: 10.5px; color: #ffb4c8; margin-top: 6px; }
+        .shop-note {
+          background: rgba(41,230,214,0.1); border: 1px solid rgba(41,230,214,0.35); color: #7ff2e6;
+          padding: 9px 14px; border-radius: 10px; font-size: 12.5px; margin-bottom: 14px;
+        }
+        .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+        .shop-move {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 12px; padding: 13px 15px;
+        }
+        .shop-move.locked { opacity: 0.5; }
+        .buy-btn {
+          margin-top: 10px; width: 100%; background: linear-gradient(90deg, #ff3ea5, #7c3aed);
+          border: none; color: #fff; padding: 8px 12px; border-radius: 999px; font-weight: 600; font-size: 12px;
+        }
+        .shop-move.equipped { border-color: rgba(34,197,94,0.55); }
+        .shop-move.swap-target { border-color: rgba(255,210,63,0.7); box-shadow: 0 0 14px -4px rgba(255,210,63,0.6); }
+        .buy-btn.unequip { background: rgba(255,255,255,0.1); }
+        .move-card.benched { opacity: 0.6; }
+        .buy-btn:disabled { background: rgba(255,255,255,0.08); color: #7d7594; cursor: default; }
+        .move-card.bought { border: 1px solid rgba(255,210,63,0.4); }
+
+        /* ---------- LEVELS / EXP ---------- */
+        .arena-chip {
+          font-size: 12px; color: #ffd23f; background: rgba(255,210,63,0.1); border: 1px solid rgba(255,210,63,0.35);
+          padding: 7px 14px; border-radius: 999px; margin-bottom: 16px; text-align: center;
+        }
+        .level-box { background: rgba(255,255,255,0.05); border-radius: 10px; padding: 10px 13px; margin-bottom: 10px; }
+        .level-box.god { color: #d8b4fe; font-size: 12px; }
+        .level-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+        .level-num { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 18px; }
+        .level-max { font-size: 12px; color: #7d7594; font-weight: 500; }
+        .level-exp { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #8ff5c2; }
+        .coin-offer-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 4px 0 14px; }
+        .coin-offer-label { font-size: 12px; color: #cfc9de; }
+        .coin-input {
+          width: 110px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); color: #ffd23f;
+          border-radius: 8px; padding: 7px 10px; font-family: 'JetBrains Mono', monospace; font-size: 13px;
+        }
+        .coin-offer-status { flex-basis: 100%; font-size: 11.5px; color: #948dae; font-family: 'JetBrains Mono', monospace; }
+        .trade-btn-row .open-btn { margin-top: 0; }
+        .trade-btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+        .exp-bar { height: 7px; border-radius: 999px; background: rgba(255,255,255,0.1); overflow: hidden; }
+        .exp-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #29e6d6); transition: width 0.4s ease; }
+        .level-foot { font-size: 11px; color: #948dae; margin-top: 8px; line-height: 1.5; }
+        .exp-summary {
+          width: 100%; max-width: 460px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 12px; padding: 12px 16px; margin: 14px 0 4px; font-size: 12.5px;
+        }
+        .exp-summary-title { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 16px; color: #8ff5c2; margin-bottom: 6px; }
+        .exp-line { color: #cfc9de; margin-bottom: 3px; }
+        .exp-line.levelup { color: #ffd23f; font-weight: 600; }
+        .exp-line.dim { color: #7d7594; margin-top: 6px; }
+        .prize-panel {
+          width: 100%; max-width: 760px; margin-top: 18px; background: rgba(255,210,63,0.06);
+          border: 1px solid rgba(255,210,63,0.4); border-radius: 14px; padding: 16px 18px;
+        }
+        .prize-filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+        .prize-search {
+          flex: 1 1 180px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18);
+          color: #f1eef7; border-radius: 999px; padding: 7px 14px; font-size: 13px;
+        }
+        .prize-confirm { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+        .auto-progress { height: 5px; border-radius: 999px; background: rgba(255,255,255,0.1); overflow: hidden; margin-top: 10px; width: 100%; }
+        .auto-progress-fill { height: 100%; background: linear-gradient(90deg, #ff3ea5, #29e6d6); animation: auto-fill 5s linear forwards; }
+        @keyframes auto-fill { from { width: 0%; } to { width: 100%; } }
+
+        /* ---------- AUTO-OPEN / LUCK / AUTO-SELL ---------- */
+        .luck-banner {
+          margin-top: 18px; font-size: 12.5px; color: #a7f3d0; background: rgba(34,197,94,0.12);
+          border: 1px solid rgba(34,197,94,0.4); padding: 8px 16px; border-radius: 999px;
+        }
+        .auto-open-panel {
+          margin-top: 26px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 14px; padding: 16px 18px; max-width: 560px; width: 100%;
+        }
+        .auto-open-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .auto-pack-toggle { display: flex; gap: 6px; }
+        .auto-running-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+        .auto-live-stats { display: flex; flex-direction: column; gap: 2px; }
+        .auto-live-count { font-family: 'JetBrains Mono', monospace; font-size: 15px; color: #7ff2e6; }
+        .auto-live-last { font-size: 11.5px; color: #948dae; }
+        .stop-btn {
+          background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.5); color: #ffb4b4;
+          padding: 10px 20px; border-radius: 999px; font-weight: 700; font-size: 13px; letter-spacing: 0.5px;
+        }
+        .stop-btn:hover { background: rgba(239,68,68,0.28); }
+        .auto-float-bar {
+          position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 55;
+          background: #17122a; border: 1px solid rgba(255,255,255,0.18); border-radius: 999px;
+          padding: 10px 12px 10px 18px; display: flex; gap: 14px; align-items: center;
+          font-size: 12.5px; color: #e9e5f5; box-shadow: 0 10px 30px -8px rgba(0,0,0,0.6);
+        }
+        .auto-results-panel {
+          margin-top: 20px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 14px; padding: 16px 18px; max-width: 900px; width: 100%;
+        }
+        .auto-sell-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .sell-all { background: rgba(124,58,237,0.14); border-color: rgba(124,58,237,0.45); color: #d8b4fe; margin-left: 8px; }
+        .sell-all:hover { background: rgba(124,58,237,0.24); }
+        .type-pill {
+          border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04);
+          border-radius: 999px; padding: 6px 12px; font-size: 13px; color: #cfc9de; display: flex; gap: 5px; align-items: center;
+        }
+        .type-pill.active { background: rgba(255,255,255,0.16); color: #fff; border-color: rgba(255,255,255,0.3); }
+        .tier-select {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: #e9e5f5;
+          border-radius: 999px; padding: 6px 14px; font-size: 13px;
+        }
+        .binder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 14px; }
+        .binder-footer { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 24px; }
+        .binder-count { font-size: 12px; color: #7d7594; font-family: 'JetBrains Mono', monospace; }
+
+        /* ---------- BATTLE ---------- */
+        .battle-wrap { padding: 28px 20px; max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; }
+        .battle-sub { color: #948dae; font-size: 13px; margin: 6px 0 18px; text-align: center; }
+        .battle-select-grid { width: 100%; max-height: 420px; overflow-y: auto; padding: 4px; margin-bottom: 8px; }
+        .team-pick { cursor: pointer; border-radius: 12px; padding: 3px; transition: transform 0.15s; }
+        .team-pick:hover { transform: translateY(-3px); }
+        .team-pick.picked { background: linear-gradient(90deg, #ff3ea5, #29e6d6); box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
+        .battle-side-label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #7d7594; margin: 6px 0; }
+        .battle-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 6px; }
+        .battle-slot { display: flex; flex-direction: column; align-items: center; gap: 5px; transition: opacity 0.3s, filter 0.3s; }
+        .battle-slot.ko { opacity: 0.3; filter: grayscale(1); }
+        .battle-slot.active .card { box-shadow: 0 0 0 3px #ffd23f, 0 0 22px rgba(255,210,63,0.6); }
+        .hp-bar { width: 88px; height: 7px; border-radius: 999px; background: rgba(255,255,255,0.12); overflow: hidden; }
+        .hp-fill { height: 100%; background: #22c55e; transition: width 0.4s ease, background 0.4s ease; }
+        .hp-text { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #a99fcf; }
+        .battle-log {
+          width: 100%; max-width: 460px; background: rgba(255,255,255,0.04); border-radius: 12px;
+          padding: 12px 16px; margin: 16px 0; font-size: 12.5px; color: #cfc9de; line-height: 1.7;
+          min-height: 80px; max-height: 140px; overflow-y: auto;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .card-shimmer, .card-holo, .god-banner, .card-rays, .card-sparkles span,
+          .card-group-star, .card-group-prism, .card-group-gilded, .card-group-champion, .card-group-echo { animation: none !important; }
+        }
+
+        /* ---------- CUTSCENE ---------- */
+        .cutscene-overlay {
+          position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 20px;
+          background: radial-gradient(ellipse at 50% 40%, rgba(28,16,46,0.97), rgba(4,3,8,0.99));
+          animation: cutscene-fade-in 0.5s ease;
+        }
+        @keyframes cutscene-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .cutscene-rays {
+          position: absolute; inset: 0; pointer-events: none;
+          background: repeating-conic-gradient(from 0deg, rgba(255,255,255,0.08) 0deg 6deg, transparent 6deg 24deg);
+          animation: holo-spin 14s linear infinite;
+        }
+        .cutscene-sparkles { position: absolute; inset: 0; pointer-events: none; }
+        .cutscene-sparkles span {
+          position: absolute; font-size: 14px; opacity: 0; text-shadow: 0 0 6px currentColor;
+          animation: twinkle 2.6s ease-in-out infinite;
+        }
+        .cutscene-title {
+          font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 26px; letter-spacing: 4px; text-align: center;
+          background: conic-gradient(from 0deg, #ff3ea5, #ffd23f, #29e6d6, #7c3aed, #ff3ea5);
+          -webkit-background-clip: text; background-clip: text; color: transparent;
+          animation: holo-spin 4s linear infinite reverse; z-index: 2;
+        }
+        .cutscene-card-wrap { z-index: 2; animation: cutscene-pop 0.7s cubic-bezier(.2,1.4,.4,1); }
+        @keyframes cutscene-pop {
+          0% { transform: scale(0.3) rotate(-8deg); opacity: 0; }
+          60% { transform: scale(1.08) rotate(2deg); opacity: 1; }
+          100% { transform: scale(1) rotate(0deg); }
+        }
+        .cutscene-name { z-index: 2; font-family: 'Rajdhani', sans-serif; font-weight: 600; font-size: 16px; color: #e9e5f5; letter-spacing: 1px; text-align: center; }
+        .cutscene-progress { z-index: 2; width: 220px; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.15); overflow: hidden; }
+        .cutscene-progress-fill { height: 100%; background: linear-gradient(90deg, #ff3ea5, #29e6d6); animation: cutscene-fill 8s linear forwards; }
+        @keyframes cutscene-fill { from { width: 0%; } to { width: 100%; } }
+        @media (prefers-reduced-motion: reduce) {
+          .cutscene-rays, .cutscene-sparkles span, .cutscene-title, .cutscene-card-wrap { animation-duration: 0.01s; }
+        }
+      `}</style>
+
+      <div className="bg-base" />
+      <div className="bg-glow" style={{ background: spotlight ? `radial-gradient(circle at 50% 32%, ${spotlight}66, transparent 70%)` : "transparent" }} />
+
+      {cutscene && (
+        <div className="cutscene-overlay">
+          <div className="cutscene-rays" />
+          <div className="cutscene-sparkles">
+            {CUTSCENE_SPARKLES.map((p, i) => (
+              <span key={i} style={{ top: p.top, left: p.left, animationDelay: `${p.delay}s`, color: p.color }}>✦</span>
+            ))}
+          </div>
+          <div className="cutscene-title">
+            {TIER_MAP[cutscene.card.tier].group === "siblings"
+              ? `☯ ${cutscene.card.name.toUpperCase()} APPEARS ☯`
+              : TIER_MAP[cutscene.card.tier].group === "echo"
+              ? "❂ IT'S ECHO ❂"
+              : (TIER_MAP[cutscene.card.tier].group === "gilded" || TIER_MAP[cutscene.card.tier].group === "champion")
+              ? "✦ LEGENDARY PULL ✦" : "✦ SHINY PULL ✦"}
+          </div>
+          <div className="cutscene-card-wrap">
+            <Card card={cutscene.card} size="large" />
+          </div>
+          <div className="cutscene-name">{cutscene.card.name} — {TIER_MAP[cutscene.card.tier].label}</div>
+          <div className="cutscene-progress"><div className="cutscene-progress-fill" /></div>
+        </div>
+      )}
+
+      {detailCard && (() => {
+        const dc = detailCard.tier === "echo" ? { ...detailCard, echoType } : detailCard;
+        const t = TYPE_MAP[dc.type];
+        const owned = collection[dc.id] || 0;
+        const effType = dc.tier === "echo" ? (echoType || null) : dc.type;
+        const strongList = effType ? (TYPE_STRONG_AGAINST[effType] || []) : [];
+        const weakList = effType ? (TYPE_WEAK_AGAINST[effType] || []) : [];
+        return (
+          <div className="detail-overlay" onClick={() => setDetailCard(null)}>
+            <div className="detail-modal" onClick={(e) => e.stopPropagation()}>
+              <button className="detail-close" onClick={() => setDetailCard(null)}>✕</button>
+              <div className="detail-body">
+                <div className="detail-card-col">
+                  <Card card={dc} size="large" owned={owned > 0} count={owned} />
+                </div>
+                <div className="detail-info">
+                  <div className="detail-name">{dc.name}</div>
+                  <div className="detail-tags">
+                    <span className="detail-tag">
+                      {dc.category === "handler" ? "🧭 Handler" : t ? `${t.icon} ${t.name}` : "❂ All Types"}
+                    </span>
+                    <span className="detail-tag">{TIER_MAP[dc.tier].symbol.repeat(TIER_MAP[dc.tier].pips)} {TIER_MAP[dc.tier].label}</span>
+                    <span className="detail-tag gold">◈ {fmtValue(cardValue(dc))}</span>
+                  </div>
+
+                  {owned > 0 ? (
+                    <div className="detail-owned">In collection ×{owned}</div>
+                  ) : (
+                    <div className="detail-unowned">Not yet collected</div>
+                  )}
+
+                  <div className="detail-section-title">Stats</div>
+                  {(() => {
+                    const lvl = canLevel(dc) ? ((cardLevels[dc.id] && cardLevels[dc.id].level) || 1) : null;
+                    const exp = canLevel(dc) ? ((cardLevels[dc.id] && cardLevels[dc.id].exp) || 0) : 0;
+                    const need = lvl && lvl < MAX_LEVEL ? expToNext(lvl) : 0;
+                    return (
+                      <>
+                        {lvl ? (
+                          <div className="level-box">
+                            <div className="level-head">
+                              <span className="level-num">Level {lvl} <span className="level-max">/ {MAX_LEVEL}</span></span>
+                              <span className="level-exp">{lvl >= MAX_LEVEL ? "MAX LEVEL" : `${fmtValue(exp)} / ${fmtValue(need)} EXP`}</span>
+                            </div>
+                            <div className="exp-bar"><div className="exp-fill" style={{ width: `${lvl >= MAX_LEVEL ? 100 : Math.min(100, (exp / need) * 100)}%` }} /></div>
+                          </div>
+                        ) : (
+                          <div className="level-box god">❂ Gods never level — their strength is fixed.</div>
+                        )}
+                        <div className="stat-grid">
+                          <div className="stat-box"><div className="stat-num">{dc.hp}</div><div className="stat-lbl">Card HP</div></div>
+                          <div className="stat-box"><div className="stat-num">{battleMaxHp(dc, lvl || 1)}</div><div className="stat-lbl">Battle HP</div></div>
+                          <div className="stat-box"><div className="stat-num">{battleAtk(dc, lvl || 1)}</div><div className="stat-lbl">Attack</div></div>
+                        </div>
+                        {lvl && (
+                          <div className="level-foot">
+                            At Lv.{MAX_LEVEL} this card reaches {fmtValue(battleMaxHp(dc, MAX_LEVEL))} HP / {fmtValue(battleAtk(dc, MAX_LEVEL))} ATK.
+                            Defeating it at Lv.1 earns {fmtValue(expYield(dc, 1))} EXP.
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  {(() => {
+                    const slots = moveSlotsFor(dc);
+                    const eqCount = equippedOf(dc, cardMoves[dc.id], cardLoadout[dc.id]).length;
+                    return <div className="detail-section-title">Moves — {eqCount}/{slots} slots equipped</div>;
+                  })()}
+                  {libraryOf(dc, cardMoves[dc.id]).map((m, i) => {
+                    const on = equippedOf(dc, cardMoves[dc.id], cardLoadout[dc.id]).some((x) => x.id === m.id);
+                    return (
+                    <div key={m.id || i} className={`move-card ${m.cost ? "bought" : ""} ${on ? "" : "benched"}`}>
+                      <div className="move-card-top">
+                        <span className="move-card-name">{m.name}</span>
+                        <span className="move-card-pwr">PWR {m.power}</span>
+                      </div>
+                      <div className="move-card-type">
+                        {TYPE_MAP[m.type] ? `${TYPE_MAP[m.type].icon} ${TYPE_MAP[m.type].name}` : m.type} move
+                        {m.cost ? " · purchased" : m.type !== dc.type && dc.type !== "echo" ? " (coverage)" : ""}
+                        {on ? " · equipped" : " · in library (swap it in at the Shop)"}
+                      </div>
+                    </div>
+                    );
+                  })}
+
+                  {effType && (
+                    <>
+                      <div className="detail-section-title">Type Matchups</div>
+                      <div className="matchup-line">
+                        <span className="matchup-lbl up">Strong vs</span>
+                        {strongList.length ? strongList.map((id) => (
+                          <span key={id} className="matchup-pill">{TYPE_MAP[id].icon} {TYPE_MAP[id].name}</span>
+                        )) : <span className="matchup-pill">—</span>}
+                      </div>
+                      <div className="matchup-line">
+                        <span className="matchup-lbl down">Weak vs</span>
+                        {weakList.length ? weakList.map((id) => (
+                          <span key={id} className="matchup-pill">{TYPE_MAP[id].icon} {TYPE_MAP[id].name}</span>
+                        )) : <span className="matchup-pill">—</span>}
+                      </div>
+                    </>
+                  )}
+
+                  {dc.isEvolution && (
+                    <div className="detail-evo">Evolved form of {dc.evolvesFromName}</div>
+                  )}
+                  {dc.hasEvolution && (
+                    <div className="detail-evo">Has an Evolved form to collect</div>
+                  )}
+
+                  {owned > 0 && (
+                    <div className="detail-actions">
+                      <button className="sell-btn" onClick={() => sellCard(dc)}>
+                        Sell one for ◈ {fmtValue(cardValue(dc))}
+                      </button>
+                      {owned > 1 && (
+                        <button className="sell-btn sell-all" onClick={() => sellAllOfCard(dc)}>
+                          Sell all {owned} for ◈ {fmtValue(cardValue(dc) * owned)}
+                        </button>
+                      )}
+                      {GOD_TIERS.includes(dc.tier) && <div className="sell-warn">⚠ A god card — selling it cannot be undone.</div>}
+                      {owned === 1 && !GOD_TIERS.includes(dc.tier) && <div className="sell-warn">This is your only copy.</div>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      <div className="topbar">
+        <div className="logo">EMBERWILD</div>
+        <div className="nav-tabs">
+          <button className={`nav-tab ${screen === "home" || screen === "opening" ? "active" : ""}`} onClick={goHome}>Packs</button>
+          <button className={`nav-tab ${screen === "battle" ? "active" : ""}`} onClick={goBattle}>Battle</button>
+          <button className={`nav-tab ${screen === "trader" ? "active" : ""}`} onClick={goTrader}>
+            Trader{trader ? <span className="trader-dot" /> : ""}
+          </button>
+          <button className={`nav-tab ${screen === "shop" ? "active" : ""}`} onClick={goShop}>Shop</button>
+          <button className={`nav-tab ${screen === "binder" ? "active" : ""}`} onClick={goBinder}>Binder</button>
+        </div>
+        <div className="stat-chips">
+          <div className="stat-chip coins-chip">◈ <b>{fmtValue(coins)}</b></div>
+          <div className="stat-chip">Packs <b>{packsOpened}</b></div>
+          <div className="stat-chip">Wins <b>{battleWins}</b></div>
+          <div className="stat-chip">Dex <b>{uniqueOwned}/{totalCards}</b></div>
+          <button className="save-btn" onClick={manualSave} disabled={saveStatus === "saving"}>
+            {saveStatus === "saving" ? "Saving…" : saveStatus === "saved" ? "Saved ✓" : "💾 Save"}
+          </button>
+        </div>
+      </div>
+      <div className="save-hint">Your collection, packs, and wins save automatically — this button just confirms it.</div>
+
+      {autoRunning && screen !== "home" && (
+        <div className="auto-float-bar">
+          <span>🔁 Auto-opening… {autoOpened} opened{autoLastCard ? ` · Latest: ${autoLastCard.name}` : ""}</span>
+          <button className="stop-btn" onClick={() => stopAutoOpen()}>■ Stop</button>
+        </div>
+      )}
+
+      {screen === "home" && (
+        <div className="home-wrap">
+          <div className="pack-shelf">
+            <div className="pack-option">
+              <div className={`pack-art ${packShake ? "shaking" : ""}`}>
+                <div className="pack-art-inner">
+                  <div className="pack-brand">EMBERWILD</div>
+                  <div className="pack-icons">{TYPES.map((t) => <span key={t.id}>{t.icon}</span>)}</div>
+                  <div className="pack-label">BOOSTER PACK · 8 CARDS</div>
+                </div>
+              </div>
+              <button className="open-btn" onClick={() => openPack("standard")} disabled={!loaded || packShake || autoRunning}>
+                {packShake ? "Opening…" : "Open Pack"}
+              </button>
+              <div className="pack-price free">Free</div>
+            </div>
+
+            <div className="pack-option">
+              <div className={`pack-art premium ${packShake ? "shaking" : ""}`}>
+                <div className="pack-art-inner">
+                  <div className="pack-brand premium-brand">PRISMATIC</div>
+                  <div className="pack-icons">{TYPES.map((t) => <span key={t.id}>{t.icon}</span>)}</div>
+                  <div className="pack-label">PREMIUM · 8 CARDS</div>
+                </div>
+              </div>
+              <button
+                className="open-btn premium-btn"
+                onClick={() => openPack("premium")}
+                disabled={!loaded || packShake || autoRunning || coins < PREMIUM_PACK_COST}
+              >
+                {packShake ? "Opening…" : coins < PREMIUM_PACK_COST ? "Not Enough Coins" : "Open Prismatic"}
+              </button>
+              <div className="pack-price">◈ {fmtValue(PREMIUM_PACK_COST)}</div>
+            </div>
+
+            <div className="pack-option">
+              <div className={`pack-art genesis ${packShake ? "shaking" : ""}`}>
+                <div className="pack-art-inner">
+                  <div className="pack-brand genesis-brand">GENESIS</div>
+                  <div className="pack-icons">{TYPES.map((t) => <span key={t.id}>{t.icon}</span>)}</div>
+                  <div className="pack-label">NEW DECK · 8 CARDS</div>
+                </div>
+              </div>
+              <button
+                className="open-btn genesis-btn"
+                onClick={() => openPack("genesis")}
+                disabled={!loaded || packShake || autoRunning}
+              >
+                {packShake ? "Opening…" : "Open Genesis"}
+              </button>
+              <div className="pack-price free">Free · 2,240 new cards</div>
+            </div>
+          </div>
+
+          {clockNow < luckExpiresAt && (
+            <div className="luck-banner">🍀 Luck Boost active — rare+ odds ×{LUCK_MULT} for {fmtClock(luckExpiresAt - clockNow)}</div>
+          )}
+
+          <div className="auto-open-panel">
+            <div className="echo-panel-title">Auto-Open Packs</div>
+            <div className="echo-panel-sub">
+              Opens one pack every 3 seconds and keeps going until you press Stop (or you run out of coins for Prismatic packs).
+            </div>
+            {!autoRunning ? (
+              <div className="auto-open-row">
+                <div className="auto-pack-toggle">
+                  <button className={`echo-type-btn ${autoOpenDeckType === "standard" ? "active" : ""}`} onClick={() => setAutoOpenDeckType("standard")}>Standard</button>
+                  <button className={`echo-type-btn ${autoOpenDeckType === "premium" ? "active" : ""}`} onClick={() => setAutoOpenDeckType("premium")}>Prismatic ◈{fmtValue(PREMIUM_PACK_COST)}</button>
+                  <button className={`echo-type-btn ${autoOpenDeckType === "genesis" ? "active" : ""}`} onClick={() => setAutoOpenDeckType("genesis")}>Genesis</button>
+                </div>
+                <button
+                  className="open-btn"
+                  onClick={() => startAutoOpen(autoOpenDeckType)}
+                  disabled={!loaded || packShake || (autoOpenDeckType === "premium" && coins < PREMIUM_PACK_COST)}
+                >
+                  ▶ Start Auto-Open
+                </button>
+              </div>
+            ) : (
+              <div className="auto-running-row">
+                <div className="auto-live-stats">
+                  <div className="auto-live-count">{autoOpened} pack{autoOpened === 1 ? "" : "s"} opened</div>
+                  {autoLastCard && (
+                    <div className="auto-live-last">
+                      Latest: {autoLastCard.name} — {TIER_MAP[autoLastCard.tier].label}
+                    </div>
+                  )}
+                </div>
+                <button className="stop-btn" onClick={() => stopAutoOpen()}>■ Stop Auto-Open</button>
+                <div className="auto-progress"><div key={autoOpened} className="auto-progress-fill" style={{ animationDuration: `${AUTO_OPEN_MS}ms` }} /></div>
+              </div>
+            )}
+            {autoStopReason && !autoRunning && <div className="shop-note">{autoStopReason}</div>}
+          </div>
+
+          {!autoRunning && autoBestCards.length > 0 && (
+            <div className="auto-results-panel">
+              <div className="echo-panel-title">Auto-Open Results</div>
+              <div className="echo-panel-sub">
+                Best pull from each of your last {autoBestCards.length} pack{autoBestCards.length === 1 ? "" : "s"}
+                {autoBestCards.length >= AUTO_BEST_CAP ? ` (showing the most recent ${AUTO_BEST_CAP})` : ""}.
+              </div>
+              <div className="binder-grid">
+                {[...autoBestCards].sort((a, b) => TIER_ORDER.indexOf(b.tier) - TIER_ORDER.indexOf(a.tier)).map((c, i) => (
+                  <div key={i} style={{ textAlign: "center" }}>
+                    <Card card={c} size="small" count={collection[c.id]} />
+                    <div className="value-chip">◈ {fmtValue(cardValue(c))}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="opening-actions">
+                <button className="ghost-btn" onClick={() => setAutoBestCards([])}>Dismiss Results</button>
+              </div>
+            </div>
+          )}
+
+          <div className="home-stats">
+            <div className="home-stat"><div className="num">{packsOpened}</div><div className="lbl">Packs Opened</div></div>
+            <div className="home-stat"><div className="num">{totalPulled}</div><div className="lbl">Cards Pulled</div></div>
+            <div className="home-stat"><div className="num">{pct}%</div><div className="lbl">Dex Complete</div></div>
+          </div>
+          <div className="odds-note">
+            1,085 creatures are spread across 11 types and the full rarity ladder. Cards are revealed one at a time,
+            weakest first — the rarest pull in the pack always comes last. Land a Rare or better and the whole screen
+            washes in that card's color. Every pack also has a 1-in-200 shot at becoming a Rare Pack, turning all 8 slots
+            into Star, Prism, or Gilded pulls.
+          </div>
+        </div>
+      )}
+
+      {screen === "opening" && pack && pack.phase === "sequence" && (
+        <div className="opening-wrap">
+          {pack.isGodPack && <div className="god-banner">✦ RARE PACK ✦</div>}
+          <div className="sequence-progress">CARD {pack.index + 1} / {pack.cards.length}</div>
+          <div className="sequence-stage">
+            {!pack.flipped ? (
+              <CardBack size="large" onClick={flipCurrent} />
+            ) : (
+              <div onClick={nextCard} style={{ cursor: "pointer" }}>
+                <Card card={currentCard} count={collection[currentCard.id]} isNew={pack.isNew[pack.index]} size="large" />
+              </div>
+            )}
+          </div>
+          <div className="opening-actions">
+            {pack.flipped ? (
+              <button className="ghost-btn primary-btn" onClick={nextCard}>
+                {pack.index < pack.cards.length - 1 ? "Next Card" : "View Full Pack"}
+              </button>
+            ) : (
+              <div className="tap-hint">Tap the card to reveal it</div>
+            )}
+            <button className="ghost-btn" onClick={skipToLineup}>Skip ▶</button>
+          </div>
+        </div>
+      )}
+
+      {screen === "opening" && pack && pack.phase === "lineup" && (
+        <div className="opening-wrap">
+          {pack.isGodPack && <div className="god-banner">✦ RARE PACK ✦</div>}
+          <div className="reveal-grid">
+            {pack.cards.map((c, i) => (
+              <Card key={i} card={c} count={collection[c.id]} isNew={pack.isNew[i]} />
+            ))}
+          </div>
+          <div className="opening-actions">
+            <button className="ghost-btn" onClick={closePack}>Back to Packs</button>
+          </div>
+          {bestCard && (
+            <div className="best-pull-banner">Best pull: <b>{bestCard.name}</b> — {TIER_MAP[bestCard.tier].label}</div>
+          )}
+        </div>
+      )}
+
+      {screen === "battle" && battlePhase === "select" && (
+        <div className="battle-wrap">
+          <div className="binder-title">Choose Your Team</div>
+          <div className="battle-sub">Pick 3 creatures from your collection ({selectedTeamIds.length}/3 selected)</div>
+          <div className="arena-chip">
+            ⚔ Next opponent: all cards Lv.{Math.max(1, Math.min(MAX_LEVEL, Math.round(arenaLevel)))}
+            {Math.round(arenaLevel) >= MAX_LEVEL ? " — a full Lv.100 team! Beat them to pick ANY card." : ` · each win ×${ARENA_GROWTH} higher`}
+          </div>
+          {ownedCreatures.length < 3 ? (
+            <div className="odds-note">You need at least 3 creatures to battle — open a few packs first!</div>
+          ) : (
+            <>
+              <div className="binder-grid battle-select-grid">
+                {ownedCreatures.map((c) => (
+                  <div
+                    key={c.id}
+                    className={`team-pick ${selectedTeamIds.includes(c.id) ? "picked" : ""}`}
+                    onClick={() => toggleTeamCard(c.id)}
+                  >
+                    <Card card={c} size="small" count={collection[c.id]} />
+                  </div>
+                ))}
+              </div>
+              <div className="opening-actions">
+                <button className="open-btn" onClick={startBattle} disabled={selectedTeamIds.length !== 3}>
+                  Start Battle
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {screen === "battle" && battlePhase === "fight" && battle && (
+        <div className="battle-wrap">
+          <div className="battle-side-label">Opponent · Lv.{battle.enemyLevel}</div>
+          <div className="battle-row">
+            {battle.aiTeam.map((m, i) => (
+              <div key={i} className={`battle-slot ${i === battle.aIdx ? "active" : ""} ${m.hp <= 0 ? "ko" : ""}`}>
+                <Card card={m.card} size="small" level={m.level} />
+                <div className="hp-bar"><div className="hp-fill" style={{ width: `${Math.max(0, (m.hp / m.maxHp) * 100)}%`, background: hpColor(m.hp / m.maxHp) }} /></div>
+                <div className="hp-text">{Math.max(0, m.hp)}/{m.maxHp}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="battle-log">
+            {battle.log.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+
+          <div className="battle-row">
+            {battle.playerTeam.map((m, i) => (
+              <div key={i} className={`battle-slot ${i === battle.pIdx ? "active" : ""} ${m.hp <= 0 ? "ko" : ""}`}>
+                <Card card={m.card} size="small" level={m.level} />
+                <div className="hp-bar"><div className="hp-fill" style={{ width: `${Math.max(0, (m.hp / m.maxHp) * 100)}%`, background: hpColor(m.hp / m.maxHp) }} /></div>
+                <div className="hp-text">{Math.max(0, m.hp)}/{m.maxHp}</div>
+              </div>
+            ))}
+          </div>
+          <div className="battle-side-label">Your Team</div>
+
+          <div className="opening-actions">
+            {battle.status === "ongoing" ? (
+              <div className="move-row">
+                {battle.playerTeam[battle.pIdx].moves.map((m, i) => {
+                  const defType = battle.aiTeam[battle.aIdx].card.type;
+                  const mult = typeMultiplier(m.type, defType);
+                  const tag = mult > 1 ? "super" : mult < 1 ? "weak" : "";
+                  return (
+                    <button key={i} className={`move-btn ${tag}`} onClick={() => playerAttack(m)}>
+                      <span className="move-name">{m.name}</span>
+                      <span className="move-meta">
+                        {TYPE_MAP[m.type] ? `${TYPE_MAP[m.type].icon} ${TYPE_MAP[m.type].name}` : m.type} · PWR {m.power}
+                        {mult > 1 ? " · ×1.5" : mult < 1 ? " · ×0.67" : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <button className="ghost-btn primary-btn" onClick={() => setBattlePhase("result")}>Continue</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {screen === "battle" && battlePhase === "result" && battle && (
+        <div className="battle-wrap">
+          {battle.status === "won" ? (
+            <>
+              <div className="god-banner">✦ VICTORY ✦</div>
+              <div className="battle-sub">
+                {battle.reward && battle.reward.isChampionCapture
+                  ? "A rare capture! Your defeated foe's creature transformed into a Champion!"
+                  : "You won the battle and captured one of your opponent's creatures!"}
+              </div>
+              {battle.reward && (
+                <div className="sequence-stage">
+                  <Card card={battle.reward} size="large" isNew={battle.reward.isNew} count={collection[battle.reward.id]} />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="binder-title">Defeated…</div>
+              <div className="battle-sub">Your team was knocked out. Build a stronger squad and try again.</div>
+            </>
+          )}
+
+          {(() => {
+            const total = Object.values(battle.expGains || {}).reduce((a, b) => a + b, 0);
+            return (
+              <div className="exp-summary">
+                <div className="exp-summary-title">EXP earned: {fmtValue(total)}</div>
+                {Object.entries(battle.expGains || {}).map(([id, amt]) => {
+                  const c = pool.find((x) => x.id === id);
+                  return c ? <div key={id} className="exp-line">{c.name} +{fmtValue(amt)} EXP</div> : null;
+                })}
+                {(battle.levelUps || []).map((u) => (
+                  <div key={u.id} className="exp-line levelup">⬆ {u.name} grew from Lv.{u.from} to Lv.{u.to}!</div>
+                ))}
+                {total === 0 && <div className="exp-line">No levelable card landed a knockout this time.</div>}
+                <div className="exp-line dim">
+                  {battle.status === "won"
+                    ? `Next opponent: Lv.${battle.nextArena}`
+                    : `Opponent level stays at Lv.${battle.nextArena} — you can retry it.`}
+                </div>
+              </div>
+            );
+          })()}
+
+          {battle.grandPrize && !battle.prizeCard && (() => {
+            const q = prizeSearch.trim().toLowerCase();
+            const matches = pool.filter((c) =>
+              (prizeDeck === "all" || (prizeDeck === "genesis" ? c.deck === "genesis" : c.deck !== "genesis")) &&
+              (prizeTier === "all" || c.tier === prizeTier) &&
+              (prizeType === "all" || c.type === prizeType) &&
+              (!q || c.name.toLowerCase().includes(q))
+            );
+            return (
+              <div className="prize-panel">
+                <div className="echo-panel-title">🏆 Level 100 Victory — Choose ANY Card</div>
+                <div className="echo-panel-sub">You defeated a full Lv.100 team. Pick any card in the game — gods included.</div>
+                <div className="prize-filters">
+                  <input className="prize-search" placeholder="Search by name…" value={prizeSearch}
+                    onChange={(e) => { setPrizeSearch(e.target.value); setPrizeVisible(60); }} />
+                  <select className="tier-select" value={prizeDeck} onChange={(e) => { setPrizeDeck(e.target.value); setPrizeVisible(60); }}>
+                    <option value="all">Both decks</option>
+                    <option value="core">Original deck</option>
+                    <option value="genesis">Genesis deck</option>
+                  </select>
+                  <select className="tier-select" value={prizeTier} onChange={(e) => { setPrizeTier(e.target.value); setPrizeVisible(60); }}>
+                    <option value="all">All rarities</option>
+                    {TIER_DEFS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                  <select className="tier-select" value={prizeType} onChange={(e) => { setPrizeType(e.target.value); setPrizeVisible(60); }}>
+                    <option value="all">All types</option>
+                    {TYPES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                {prizePick && (
+                  <div className="prize-confirm">
+                    <span>Selected: <b>{prizePick.name}</b> ({TIER_MAP[prizePick.tier].label})</span>
+                    <button className="open-btn" onClick={claimPrize}>Claim This Card</button>
+                  </div>
+                )}
+                <div className="binder-grid offer-pool">
+                  {matches.slice(0, prizeVisible).map((c) => (
+                    <div key={c.id} className={`trade-pick ${prizePick && prizePick.id === c.id ? "picked" : ""}`} onClick={() => setPrizePick(c)}>
+                      <Card card={c} size="small" owned={true} />
+                    </div>
+                  ))}
+                </div>
+                <div className="binder-footer">
+                  <div className="binder-count">Showing {Math.min(prizeVisible, matches.length)} of {matches.length}</div>
+                  {matches.length > prizeVisible && (
+                    <button className="ghost-btn" onClick={() => setPrizeVisible((v) => v + 60)}>Show More</button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+          {battle.prizeCard && (
+            <div className="prize-panel">
+              <div className="echo-panel-title">🏆 Prize claimed</div>
+              <div className="sequence-stage">
+                <Card card={battle.prizeCard} size="large" owned={true} count={collection[battle.prizeCard.id]} />
+              </div>
+            </div>
+          )}
+          <div className="opening-actions">
+            <button className="ghost-btn primary-btn" onClick={resetBattle}>Battle Again</button>
+            <button className="ghost-btn" onClick={goHome}>Back to Packs</button>
+          </div>
+        </div>
+      )}
+
+      {screen === "trader" && (
+        <div className="trader-wrap">
+          <div className="binder-header">
+            <div className="binder-title">{trader ? "🧳 Wandering Trader" : "🧳 Trader"}</div>
+            <div className={`trader-timer ${trader ? "here" : ""}`}>
+              {trader ? `Leaves in ${fmtClock(msLeft)}` : `Arrives in ${fmtClock(msLeft)}`}
+            </div>
+          </div>
+
+          {!trader ? (
+            <div className="odds-note">
+              The trader stays for 8 minutes, then returns 4 minutes after leaving.
+              They carry {TRADER_STOCK} random cards — rarer cards are far less likely to be in stock, and there's
+              a 0.25% chance they're carrying Echo itself (Neon and Drogen are twice as likely). Pay with cards of equal value, cards plus coins at ×2 the price,
+              or coins alone at ×4 the price (Echo, Neon and Drogen accept cards only).
+            </div>
+          ) : (
+            <>
+              <div className="trade-panel-head">
+                <div className="battle-sub" style={{ marginBottom: 0 }}>
+                  Carrying {trader.cardIds.length} card{trader.cardIds.length === 1 ? "" : "s"}. Tap one to negotiate.
+                </div>
+                <button className="ghost-btn" onClick={refreshTraderStock} disabled={coins < TRADER_REFRESH_COST}>
+                  🔄 Refresh Stock — ◈ {fmtValue(TRADER_REFRESH_COST)}
+                </button>
+              </div>
+              <div className="binder-grid trader-stock">
+                {trader.cardIds.map((id) => {
+                  const c = pool.find((x) => x.id === id);
+                  if (!c) return null;
+                  return (
+                    <div
+                      key={id}
+                      className={`trade-pick ${tradeTargetId === id ? "picked" : ""}`}
+                      onClick={() => selectTradeTarget(id)}
+                    >
+                      {!collection[id] && <div className="missing-badge">NEW</div>}
+                      <Card card={c} size="small" />
+                      <div className="value-chip">◈ {fmtValue(cardValue(c))}</div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {tradeTarget && tradeTarget.tier === "echo" && (
+                <div className="echo-trade-panel">
+                  <div className="echo-panel-title">❂ Trading for Echo</div>
+                  <div className="echo-panel-sub">
+                    Echo is the god of all types. The trader will only part with it if you've completed the dex
+                    and can pay its true price.
+                  </div>
+                  <div className="req-list">
+                    <div className={echoEligibility.missingCount === 0 ? "req ok" : "req"}>
+                      {echoEligibility.missingCount === 0 ? "✓" : "✗"} Own every card in the game except Echo
+                      {echoEligibility.missingCount > 0 && ` — ${fmtValue(echoEligibility.missingCount)} still missing`}
+                    </div>
+                    <div className={echoEligibility.championCount >= ECHO_COST.champion ? "req ok" : "req"}>
+                      {echoEligibility.championCount >= ECHO_COST.champion ? "✓" : "✗"} Hold at least {ECHO_COST.champion} Champion cards
+                      {` — you have ${echoEligibility.championCount}`}
+                    </div>
+                  </div>
+                  <div className="echo-panel-sub" style={{ marginTop: 10 }}>
+                    Price: one of every Gilded Rare, {ECHO_COST.champion} Champion, and {ECHO_COST.prismSignature} Prism
+                    Signature cards (◈ {fmtValue(ECHO_COST_VALUE)} total).
+                  </div>
+                  <div className="req-list">
+                    <div className={echoEligibility.gildedReady ? "req ok" : "req"}>
+                      {echoEligibility.gildedReady ? "✓" : "✗"} One of each of the {TIER_COUNTS.gilded} Gilded Rares
+                    </div>
+                    <div className={echoEligibility.psCount >= ECHO_COST.prismSignature ? "req ok" : "req"}>
+                      {echoEligibility.psCount >= ECHO_COST.prismSignature ? "✓" : "✗"} {ECHO_COST.prismSignature} Prism Signature cards
+                      {` — you have ${echoEligibility.psCount}`}
+                    </div>
+                  </div>
+                  <div className="echo-panel-sub" style={{ marginTop: 10 }}>Echo can only be traded for cards — the trader won't take coins for it.</div>
+                  <div className="trade-btn-row">
+                    <button className="open-btn" onClick={executeTrade} disabled={!echoEligibility.canTrade}>
+                      {echoEligibility.canTrade ? "Trade for Echo" : "Requirements Not Met"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {tradeTarget && tradeTarget.tier !== "echo" && (
+                <div className="trade-panel">
+                  <div className="trade-panel-head">
+                    <div>
+                      <div className="echo-panel-title">Trading for {tradeTarget.name}</div>
+                      <div className="echo-panel-sub">
+                        {isGodTarget
+                          ? `Cards only — needs ◈ ${fmtValue(cardValue(tradeTarget))} in cards. Coins aren't accepted.`
+                          : `Cards only ◈ ${fmtValue(cardValue(tradeTarget))} · Cards + coins ◈ ${fmtValue(cardValue(tradeTarget) * TRADER_MIXED_MULT)} (×${TRADER_MIXED_MULT}) · Coins only ◈ ${fmtValue(cardValue(tradeTarget) * TRADER_COIN_ONLY_MULT)} (×${TRADER_COIN_ONLY_MULT})`}
+                      </div>
+                    </div>
+                    <div className={`trade-balance ${tradeCheck && tradeCheck.ok ? "ok" : ""}`}>
+                      {tradeCheck && tradeCheck.ok
+                        ? "Deal accepted ✓"
+                        : `◈ ${fmtValue(Math.max(0, (tradeCheck ? tradeCheck.required - tradeCheck.paid : 0)))} short`}
+                    </div>
+                  </div>
+
+                  {!isGodTarget && tradeCheck && (
+                    <div className="coin-offer-row">
+                      <label className="coin-offer-label">Add coins</label>
+                      <input
+                        type="number" min="0" max={coins} step="100" value={offerCoins}
+                        onChange={(e) => setOfferCoins(Math.max(0, Math.min(coins, Number(e.target.value) || 0)))}
+                        className="coin-input"
+                      />
+                      <button className="ghost-btn" onClick={fillCoins}>Cover the rest with coins</button>
+                      <button className="ghost-btn" onClick={() => setOfferCoins(0)}>Clear</button>
+                      <div className="coin-offer-status">
+                        {tradeCheck.mode === "cards" && "Paying with cards only"}
+                        {tradeCheck.mode === "mixed" && `Cards + coins (price ×${TRADER_MIXED_MULT})`}
+                        {tradeCheck.mode === "coins" && `Coins only (price ×${TRADER_COIN_ONLY_MULT})`}
+                        {` · paid ◈ ${fmtValue(tradeCheck.paid)} of ◈ ${fmtValue(tradeCheck.required)}`}
+                      </div>
+                    </div>
+                  )}
+
+                  {tradeTarget.tier === "siblings" && (
+                    <div className="echo-trade-panel" style={{ marginTop: 0, marginBottom: 14 }}>
+                      <div className="echo-panel-sub">
+                        {tradeTarget.name} is one of the Genesis siblings. The trader only sells to collectors who have
+                        completed the Genesis deck.
+                      </div>
+                      <div className="req-list">
+                        <div className={siblingEligibility.missingCount === 0 ? "req ok" : "req"}>
+                          {siblingEligibility.missingCount === 0 ? "✓" : "✗"} Own every Genesis card except Champions and the siblings
+                          {siblingEligibility.missingCount > 0 && ` — ${fmtValue(siblingEligibility.missingCount)} still missing`}
+                        </div>
+                        <div className={siblingEligibility.championCount >= 5 ? "req ok" : "req"}>
+                          {siblingEligibility.championCount >= 5 ? "✓" : "✗"} Hold at least 5 Genesis Champions — you have {siblingEligibility.championCount}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {Object.keys(offer).length > 0 && (
+                    <div className="offer-row">
+                      {Object.entries(offer).map(([id, qty]) => {
+                        const c = pool.find((x) => x.id === id);
+                        return (
+                          <div key={id} className="offer-item" onClick={() => removeFromOffer(id)} title="Click to remove one">
+                            <Card card={c} size="small" />
+                            <div className="value-chip">×{qty} · ◈ {fmtValue(cardValue(c) * qty)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="trade-btn-row">
+                    <button className="open-btn" onClick={executeTrade}
+                      disabled={!(tradeCheck && tradeCheck.ok) || (tradeTarget.tier === "siblings" && !siblingEligibility.canTrade)}>
+                      Confirm Trade
+                    </button>
+                    {!isGodTarget && (
+                      <button className="open-btn premium-btn" onClick={buyWithCoins}
+                        disabled={coins < cardValue(tradeTarget) * TRADER_COIN_ONLY_MULT}>
+                        Buy with coins only · ◈ {fmtValue(cardValue(tradeTarget) * TRADER_COIN_ONLY_MULT)}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="echo-panel-sub" style={{ marginTop: 16 }}>
+                    Your cards — tap to add to the offer (the cheapest are listed first):
+                  </div>
+                  <div className="binder-grid offer-pool">
+                    {tradableOwned.slice(0, offerVisible).map((c) => {
+                      const owned = collection[c.id] || 0;
+                      const used = offer[c.id] || 0;
+                      return (
+                        <div
+                          key={c.id}
+                          className={`trade-pick ${used > 0 ? "picked" : ""} ${used >= owned ? "exhausted" : ""}`}
+                          onClick={() => addToOffer(c.id)}
+                        >
+                          <Card card={c} size="small" count={owned} />
+                          <div className="value-chip">◈ {fmtValue(cardValue(c))} · {owned - used} left</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {tradableOwned.length > offerVisible && (
+                    <div className="binder-footer">
+                      <div className="binder-count">Showing {offerVisible} of {fmtValue(tradableOwned.length)} (cheapest first)</div>
+                      <button className="ghost-btn" onClick={() => setOfferVisible((v) => v + 120)}>Show More</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {screen === "shop" && (() => {
+        const shopCard = shopCardId ? pool.find((c) => c.id === shopCardId) : null;
+        const ownedCards = pool
+          .filter((c) => collection[c.id] > 0 && c.category === "creature")
+          .sort((a, b) => TIER_ORDER.indexOf(b.tier) - TIER_ORDER.indexOf(a.tier));
+        return (
+          <div className="trader-wrap">
+            <div className="binder-header">
+              <div className="binder-title">🛠 Move Shop</div>
+              <div className="trader-timer here">◈ {fmtValue(coins)}</div>
+            </div>
+            <div className="battle-sub">
+              Sell duplicate cards from your Binder to earn coins, then teach powerful new moves to cards strong
+              enough to learn them. Every card has a limited number of attack slots (rarer cards have more) — you can swap its moves for any other move it owns.
+            </div>
+
+            <div className="detail-section-title">🍀 Luck Boosts</div>
+            {clockNow < luckExpiresAt && (
+              <div className="shop-note">Active now — ×{LUCK_MULT} rare+ odds for {fmtClock(luckExpiresAt - clockNow)} more.</div>
+            )}
+            <div className="battle-sub">
+              Temporarily multiplies the odds of every tier above Rare by ×{LUCK_MULT} on every pack you open
+              (stacks with Prismatic packs). Buying while one is active extends the timer.
+            </div>
+            <div className="shop-grid">
+              {LUCK_OPTIONS.map((opt) => (
+                <div key={opt.id} className={`shop-move ${coins >= opt.cost ? "" : "locked"}`}>
+                  <div className="move-card-top">
+                    <span className="move-card-name">{opt.label}</span>
+                    <span className="move-card-pwr">×{LUCK_MULT}</span>
+                  </div>
+                  <div className="move-card-type">Boosts every pack you open during this window</div>
+                  <button className="buy-btn" disabled={coins < opt.cost} onClick={() => buyLuckBoost(opt)}>
+                    {coins < opt.cost ? "Not enough coins" : `Buy · ◈ ${fmtValue(opt.cost)}`}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="detail-section-title">1 · Choose a card{ownedCards.length > 150 ? ` (your 150 strongest of ${fmtValue(ownedCards.length)})` : ""}</div>
+            {ownedCards.length === 0 ? (
+              <div className="odds-note">You don't own any creatures yet — open a pack first.</div>
+            ) : (
+              <div className="binder-grid offer-pool">
+                {ownedCards.slice(0, 150).map((c) => (
+                  <div
+                    key={c.id}
+                    className={`trade-pick ${shopCardId === c.id ? "picked" : ""}`}
+                    onClick={() => { setShopCardId(c.id); setShopNote(""); setSwapInId(null); }}
+                  >
+                    <Card card={c} size="small" count={collection[c.id]} />
+                    <div className="value-chip">{equippedOf(c, cardMoves[c.id], cardLoadout[c.id]).length}/{moveSlotsFor(c)} slots · {libraryOf(c, cardMoves[c.id]).length} moves</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {shopCard && (() => {
+              const slots = moveSlotsFor(shopCard);
+              const eq = equippedOf(shopCard, cardMoves[shopCard.id], cardLoadout[shopCard.id]);
+              const eqIds = eq.map((m) => m.id);
+              const bench = libraryOf(shopCard, cardMoves[shopCard.id]).filter((m) => !eqIds.includes(m.id));
+              const typeLine = (m) => `${TYPE_MAP[m.type] ? `${TYPE_MAP[m.type].icon} ${TYPE_MAP[m.type].name}` : m.type} move${m.type !== shopCard.type && shopCard.tier !== "echo" ? " (coverage)" : ""}`;
+              return (
+                <>
+                  <div className="detail-section-title">2 · {shopCard.name}'s equipped moves ({eq.length}/{slots} slots)</div>
+                  {shopNote && <div className="shop-note">{shopNote}</div>}
+                  <div className="shop-grid">
+                    {eq.map((m) => (
+                      <div key={m.id} className="shop-move equipped">
+                        <div className="move-card-top">
+                          <span className="move-card-name">{m.name}</span>
+                          <span className="move-card-pwr">PWR {m.power}</span>
+                        </div>
+                        <div className="move-card-type">{typeLine(m)}</div>
+                        {swapInId ? (
+                          <button className="buy-btn" onClick={() => equipMove(shopCard, swapInId, m.id)}>Replace this move</button>
+                        ) : (
+                          <button className="buy-btn unequip" disabled={eq.length <= 1} onClick={() => unequipMove(shopCard, m.id)}>Unequip</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {bench.length > 0 && (
+                    <>
+                      <div className="detail-section-title">Move library — owned, not equipped</div>
+                      <div className="shop-grid">
+                        {bench.map((m) => (
+                          <div key={m.id} className={`shop-move ${swapInId === m.id ? "swap-target" : ""}`}>
+                            <div className="move-card-top">
+                              <span className="move-card-name">{m.name}</span>
+                              <span className="move-card-pwr">PWR {m.power}</span>
+                            </div>
+                            <div className="move-card-type">{typeLine(m)}</div>
+                            <button className="buy-btn" onClick={() => equipMove(shopCard, m.id)}>
+                              {eq.length < slots ? "Equip" : swapInId === m.id ? "Choose a move to replace…" : "Swap in…"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {swapInId && <button className="ghost-btn" style={{ marginTop: 10 }} onClick={() => { setSwapInId(null); setShopNote(""); }}>Cancel swap</button>}
+                    </>
+                  )}
+
+                  <div className="detail-section-title">3 · Buy a new move for {shopCard.name}</div>
+                  <div className="shop-grid">
+                    {SHOP_MOVES.map((m) => {
+                      const check = canLearnMove(shopCard, m, cardMoves[shopCard.id] || []);
+                      const afford = coins >= m.cost;
+                      return (
+                        <div key={m.id} className={`shop-move ${check.ok && afford ? "" : "locked"}`}>
+                          <div className="move-card-top">
+                            <span className="move-card-name">{m.name}</span>
+                            <span className="move-card-pwr">PWR {m.power}</span>
+                          </div>
+                          <div className="move-card-type">
+                            {TYPE_MAP[m.type] ? `${TYPE_MAP[m.type].icon} ${TYPE_MAP[m.type].name}` : m.type} ·
+                            {` ${TIER_MAP[m.minTier].label}+ only`}
+                          </div>
+                          <button
+                            className="buy-btn"
+                            disabled={!check.ok || !afford}
+                            onClick={() => buyMove(shopCard, m)}
+                          >
+                            {!check.ok ? check.why : !afford ? "Not enough coins" : `Buy · ◈ ${fmtValue(m.cost)}`}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        );
+      })()}
+
+      {screen === "binder" && (
+        <div className="binder-wrap">
+          <div className="binder-header">
+            <div className="binder-title">Collection Binder</div>
+            <div className="binder-pct">{uniqueOwned} / {totalCards} unique — {pct}%</div>
+          </div>
+          {collection[ECHO_CARD.id] > 0 && (
+            <div className="echo-panel">
+              <div className="echo-panel-title">❂ Echo — God of All Types</div>
+              <div className="echo-panel-sub">Echo can take on any elemental form. Choose one and its color changes to match.</div>
+              <div className="echo-type-row">
+                <button className={`echo-type-btn ${!echoType ? "active" : ""}`} onClick={() => setEchoForm(null)}>❂ True Form</button>
+                {TYPES.map((t) => (
+                  <button key={t.id} className={`echo-type-btn ${echoType === t.id ? "active" : ""}`} onClick={() => setEchoForm(t.id)}>
+                    {t.icon} {t.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="echo-panel">
+            <div className="echo-panel-title">💰 Auto-Sell by Rarity</div>
+            <div className="echo-panel-sub">Sell every card you own of a chosen rarity in one click, at its full value.</div>
+            {autoSellNote && <div className="shop-note">{autoSellNote}</div>}
+            <div className="auto-sell-row">
+              <select className="tier-select" value={autoSellTier} onChange={(e) => setAutoSellTier(e.target.value)}>
+                {TIER_DEFS.filter((t) => !GOD_TIERS.includes(t.id)).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label} (◈ {fmtValue(TIER_VALUES[t.id])}{t.id === "champion" ? ", Genesis ◈ " + fmtValue(GENESIS_CHAMPION_VALUE) : ""} each)
+                  </option>
+                ))}
+              </select>
+              <button className="sell-btn" onClick={() => sellByRarity(autoSellTier)}>
+                Sell All {TIER_MAP[autoSellTier].label} Cards
+              </button>
+            </div>
+          </div>
+          <div className="filter-row">
+            <button className={`type-pill ${filterType === "all" ? "active" : ""}`} onClick={() => setFilterType("all")}>All</button>
+            {TYPES.map((t) => (
+              <button key={t.id} className={`type-pill ${filterType === t.id ? "active" : ""}`} onClick={() => setFilterType(t.id)}>
+                {t.icon} {t.name}
+              </button>
+            ))}
+            <select className="tier-select" value={filterTier} onChange={(e) => setFilterTier(e.target.value)}>
+              <option value="all">All Rarities</option>
+              {TIER_DEFS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </div>
+          <div className="binder-grid">
+            {visiblePool.map((c) => (
+              <div key={c.id} style={{ textAlign: "center" }} className="binder-cell" onClick={() => setDetailCard(c)}>
+                <Card card={c} size="small" owned={!!collection[c.id]} count={collection[c.id] || 0} />
+                <div className="value-chip">◈ {fmtValue(cardValue(c))}</div>
+              </div>
+            ))}
+          </div>
+          <div className="binder-footer">
+            <div className="binder-count">Showing {visiblePool.length} of {filteredPool.length}</div>
+            {filteredPool.length > visibleCount && (
+              <button className="ghost-btn" onClick={() => setVisibleCount((v) => v + 120)}>Show More</button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+    </LevelsContext.Provider>
+    </EchoTypeContext.Provider>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
